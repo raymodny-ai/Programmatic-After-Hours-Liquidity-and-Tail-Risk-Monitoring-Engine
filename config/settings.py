@@ -112,7 +112,7 @@ MAX_BID_ASK_SPREAD_PCT: float = _options_filter.get("max_bid_ask_spread_pct", 0.
 _delta_cfg = _tickers_config.get("delta_interpolation", {})
 TARGET_DELTA_PUT: float = _delta_cfg.get("target_delta_put", 0.25)
 TARGET_DELTA_CALL: float = _delta_cfg.get("target_delta_call", 0.25)
-INTERPOLATION_METHOD: str = _delta_cfg.get("interpolation_method", "cubic_spline")
+INTERPOLATION_METHOD: str = _delta_cfg.get("interpolation_method", "pchip")  # v1.2: 默认 PCHIP
 
 # ---------------------------------------------------------------------------
 # 风险预警阈值
@@ -147,7 +147,10 @@ def validate_config() -> list[str]:
     if not FRED_API_KEY or FRED_API_KEY == "your_fred_api_key_here":
         warnings.append("FRED_API_KEY 未设置，模块二（M2数据）将无法工作")
 
-    if not GOOGLE_SPREADSHEET_ID or GOOGLE_SPREADSHEET_ID == "your_spreadsheet_id_here":
-        warnings.append("GOOGLE_SPREADSHEET_ID 未设置，模块三（Sheets推送）将无法工作")
+    if not os.getenv("WEB_DASHBOARD_API_KEY"):
+        warnings.append(
+            "WEB_DASHBOARD_API_KEY 未设置，Web 看板 /api/ 端点将无需认证。"
+            "生产环境建议在 .env 中设置此密钥。"
+        )
 
     return warnings

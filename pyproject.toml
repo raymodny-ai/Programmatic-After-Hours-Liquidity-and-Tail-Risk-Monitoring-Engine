@@ -30,6 +30,8 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "plotly>=5.22.0",
     "openpyxl>=3.1.0",
+    "yfinance>=0.2.40",
+    "pandas-market-calendars>=4.4.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +41,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.5.0",
     "pre-commit>=3.7.0",
+    "respx>=0.21.0",
 ]
 
 [tool.ruff]

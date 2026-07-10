@@ -162,13 +162,37 @@ class DataWriter:
         filename: str = "daily_risk_snapshot.parquet",
     ) -> pd.DataFrame:
         """
-        加载主数据帧快照。
+        加载主数据帧快照（v1.2: 含数据新鲜度校验）。
+
+        校验逻辑:
+            - 检查最新一行日期是否为上一个交易日
+            - 若数据过期超过 3 个交易日，发出警告
         """
         file_path = self.processed_dir / filename
         if not file_path.exists():
             logger.warning(f"主数据帧文件不存在: {file_path}，返回空 DataFrame")
             return pd.DataFrame()
-        return pd.read_parquet(file_path)
+
+        df = pd.read_parquet(file_path)
+
+        # ── v1.2: 数据新鲜度校验 ──
+        if not df.empty and "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+            latest_date = df["date"].max().date()
+            today = date.today()
+            days_since = (today - latest_date).days
+
+            if days_since > 3:
+                logger.warning(
+                    f"数据新鲜度警告: 最新数据日期 {latest_date}，"
+                    f"距今 {days_since} 天。Z-Score 窗口可能受污染。"
+                )
+            elif days_since > 0:
+                logger.info(
+                    f"数据新鲜度: 最新日期 {latest_date}，距今 {days_since} 天"
+                )
+
+        return df
 
     def list_available_dates(self, ticker: str) -> list[date]:
         """

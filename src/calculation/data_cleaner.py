@@ -1,10 +1,11 @@
 """
-数据清洗模块 (data_cleaner.py)
+数据清洗模块 (data_cleaner.py) v1.2
 
 功能：
 - 从 Polygon.io 快照 JSON 解析为结构化 pandas DataFrame
-- 剔除期权链中 Bid/Ask 价差异常的脏数据
-- DTE 过滤器：筛选距离到期日约 30 天的期权链
+- 剔除期权链中 Bid/Ask 价差异常的脏数据（VWMP 加权中点）
+- DTE 严格过滤器：[25, 35] 天窗口，无外推回退
+- open_interest > 0 流动性过滤
 - 缺失值处理：标记或剔除 Delta/IV 缺失的行
 """
 
@@ -76,14 +77,29 @@ def parse_snapshots_to_dataframe(
             today = as_of_date or date.today()
             dte = (expiration_date - today).days
 
-            # 计算 Bid/Ask 价差
-            bid = day_data.get("open", np.nan)  # Polygon snapshot day.open 可能是 bid
-            ask = day_data.get("high", np.nan)  # 近似处理，实际 bid/ask 需通过 quotes 端点
+            # ── v1.2: 使用 last_quote 中的真实 Bid/Ask ──
+            last_quote = snap.get("last_quote", {}) or {}
+            bid = last_quote.get("bid") or snap.get("day", {}).get("low")
+            ask = last_quote.get("ask") or snap.get("day", {}).get("high")
             last_price = day_data.get("close", np.nan)
-            mid_price = (bid + ask) / 2 if bid and ask else last_price
+
+            # VWMP: 成交量加权中点（v1.2）
+            bid_size = last_quote.get("bid_size", 0) or 0
+            ask_size = last_quote.get("ask_size", 0) or 0
+            total_size = bid_size + ask_size
+            if total_size > 0 and bid is not None and ask is not None:
+                mid_price = (bid * ask_size + ask * bid_size) / total_size
+            elif bid is not None and ask is not None:
+                mid_price = (bid + ask) / 2
+            else:
+                mid_price = last_price
+
             bid_ask_spread_pct = (
-                abs(ask - bid) / mid_price if mid_price and mid_price > 0 else np.nan
+                abs(ask - bid) / mid_price if mid_price and mid_price > 0 and bid and ask else np.nan
             )
+
+            # ── v1.2: 提取 open_interest ──
+            open_interest = details.get("open_interest") or day_data.get("open_interest")
 
             records.append({
                 "snapshot_ticker": snap.get("ticker", ""),
@@ -101,6 +117,7 @@ def parse_snapshots_to_dataframe(
                 "ask": ask,
                 "last_price": last_price,
                 "volume": day_data.get("volume", 0),
+                "open_interest": open_interest,
                 "bid_ask_spread_pct": bid_ask_spread_pct,
             })
         except Exception as e:
@@ -161,39 +178,48 @@ def filter_by_dte(
     tolerance: int = DTE_TOLERANCE,
 ) -> pd.DataFrame:
     """
-    筛选距离到期日约 target_dte 天的期权链。
+    严格筛选距离到期日在 [target_dte - tolerance, target_dte + tolerance] 天的期权链。
 
-    如果存在多个到期日，优先选择 DTE 最接近目标的那个。
+    v1.2 变更：
+        - 严格 DTE 窗口 [25, 35]，不再回退到窗口外最近到期日
+        - 若窗口内有多个到期日，选择 DTE 最接近目标的那个
 
     Args:
         df: 期权数据 DataFrame（须包含 dte 列）
         target_dte: 目标到期天数
-        tolerance: 容差范围（±天），在此范围内的到期日都视为候选
+        tolerance: 容差范围（±天）
 
     Returns:
-        筛选后的 DataFrame，仅包含最接近目标 DTE 的到期日的期权
+        筛选后的 DataFrame；若无匹配到期日则返回空 DataFrame
     """
     if "dte" not in df.columns:
         logger.warning("DataFrame 缺少 dte 列，跳过 DTE 过滤")
         return df
 
-    # 找出所有在容差范围内的 DTE
     dt_min = target_dte - tolerance
     dt_max = target_dte + tolerance
 
     candidate_df = df[(df["dte"] >= dt_min) & (df["dte"] <= dt_max)]
 
     if candidate_df.empty:
-        # 如果容差范围内没有数据，取 DTE 最接近的
+        # v1.2: 严格窗口，无数据则返回空
         logger.warning(
-            f"DTE 容差 [{dt_min}, {dt_max}] 内无数据，"
-            f"选择最接近目标 DTE={target_dte} 的到期日"
+            f"DTE 严格窗口 [{dt_min}, {dt_max}] 内无数据，"
+            f"跳过该标的（不再回退到最近到期日）"
         )
-        df["dte_diff"] = (df["dte"] - target_dte).abs()
-        nearest_dte = df["dte_diff"].min()
-        candidate_df = df[df["dte_diff"] == nearest_dte].drop(columns=["dte_diff"])
+        return pd.DataFrame()
 
-    selected_dte = candidate_df["dte"].iloc[0] if not candidate_df.empty else None
+    # 若存在多个到期日，选择 DTE 最接近目标的
+    unique_dtes = candidate_df["dte"].unique()
+    if len(unique_dtes) > 1:
+        closest_dte = min(unique_dtes, key=lambda d: abs(d - target_dte))
+        candidate_df = candidate_df[candidate_df["dte"] == closest_dte]
+        logger.info(
+            f"DTE 过滤器: [{dt_min}, {dt_max}] 内有 {len(unique_dtes)} 个到期日，"
+            f"选择最接近的 DTE={closest_dte}"
+        )
+
+    selected_dte = candidate_df["dte"].iloc[0]
     logger.info(f"DTE 过滤器: 目标={target_dte}, 实际选择={selected_dte}, 保留 {len(candidate_df)} 条记录")
     return candidate_df
 
@@ -224,6 +250,14 @@ def filter_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 
     # 剔除 IV 为 0 或负值的记录
     df = df[df["implied_volatility"] > 0]
+
+    # ── v1.2: 过滤零未平仓合约（open_interest > 0）──
+    if "open_interest" in df.columns:
+        oi_before = len(df)
+        df = df[df["open_interest"].isna() | (df["open_interest"] > 0)]
+        oi_removed = oi_before - len(df)
+        if oi_removed > 0:
+            logger.info(f"open_interest 过滤器: 剔除了 {oi_removed} 条零 OI 记录")
 
     # 可选：按最低成交量过滤
     df = df[df["volume"] >= MIN_VOLUME]

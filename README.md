@@ -1,10 +1,10 @@
-# 程序化盘后流动性与尾部风险监控引擎 v1.1
+# 程序化盘后流动性与尾部风险监控引擎 v1.2
 
 自动化的本地数据管道，在每日美股盘后自动抓取、清洗并计算关键的宏观流动性指标与期权衍生品风险信号。通过程序化扫描核心宽基 ETF 的隐含波动率斜率及保证金债务动量，为量化策略和主观资产配置提供"尾部风险"预警信号。
 
 本项目隶属于 **alphaear-logic-visualizer** 架构下的宏观与衍生品监控模块。
 
-> **v1.1 更新**: Google Sheets 推送已替换为本地 **FastAPI + Plotly Web 看板**，新增 FINRA 自动爬取、跨标的剪刀差统计检验和 Z-Score 追踪图表。
+> **v1.2 更新**: PCHIP 单调样条插值、yfinance 备用数据源降级、VXN 独立接入、NYSE 交易日历、API Key 认证、宏观流动性 Web 面板、移动端响应式、完整测试覆盖。
 
 ---
 
@@ -15,9 +15,9 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     数据接入层                           │
-│  Polygon.io API  │  FRED API  │  Cboe VIX Futures      │
+│  Polygon.io API  │  FRED API  │  Cboe VIX/VXN Futures  │
 │  (EOD 期权链)      (M2 货币供应)  (期限结构)             │
-│  FINRA 自动爬取 (保证金债务 XLSX)                        │
+│  yfinance 备用源  │  FINRA 自动爬取 (保证金债务 XLSX)   │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ▼
@@ -163,13 +163,14 @@ project-root/
 │   │   ├── api_client.py     # HTTP 客户端基类（速率限制/重试）
 │   │   ├── polygon_client.py # Polygon.io 期权链 API
 │   │   ├── fred_client.py    # FRED M2 数据 API
-│   │   ├── vix_client.py     # Cboe VIX 期货数据
+│   │   ├── vix_client.py     # Cboe VIX/VXN 期货数据 🆕 VXN
 │   │   ├── finra_scraper.py  # FINRA 保证金债务自动爬取 🆕
+│   │   ├── fallback_source.py # yfinance 备用数据源 🆕 v1.2
 │   │   ├── data_writer.py    # 本地 JSON/Parquet 存储
-│   │   └── eod_fetcher.py    # 日终批量抓取编排
+│   │   └── eod_fetcher.py    # 日终批量抓取编排（含降级）
 │   ├── calculation/          # 计算引擎层
-│   │   ├── data_cleaner.py   # 期权链数据清洗
-│   │   ├── delta_interpolator.py  # 25Δ IV 样条插值
+│   │   ├── data_cleaner.py   # 期权链数据清洗（VWMP + OI过滤）
+│   │   ├── delta_interpolator.py  # 25Δ IV PCHIP/CubicSpline 插值 🆕
 │   │   ├── skew_calculator.py     # Skew 与剪刀差计算
 │   │   ├── term_structure.py      # 波动率期限结构
 │   │   ├── cross_asset_signals.py # 跨标的剪刀差统计检验 🆕
@@ -177,7 +178,7 @@ project-root/
 │   │   ├── risk_signals.py        # Z-Score 预警信号
 │   │   └── master_aggregator.py   # 主数据帧汇总
 │   └── presentation/        # 展现与预警层
-│       ├── web_dashboard.py  # FastAPI + Plotly Web 看板 🆕 替代 Google Sheets
+│       ├── web_dashboard.py  # FastAPI + Plotly Web 看板 🆕 v1.2（认证+宏观面板+响应式）
 │       ├── google_sheets.py  # Google Sheets 推送 (v1.0 遗留，可移除)
 │       ├── webhook_pusher.py # Webhook 推送
 │       ├── terminal_alerts.py # 终端 Rich 报告
@@ -186,9 +187,13 @@ project-root/
 │   ├── raw/                 # 原始 API 响应
 │   │   └── finra/           # FINRA 自动爬取缓存 🆕
 │   └── processed/           # 计算后数据
-├── tests/                   # 测试
-│   ├── test_data_ingestion/
+├── tests/                   # 测试（v1.2: 新增单元测试 + 集成测试）
 │   ├── test_calculation/
+│   │   ├── test_delta_interpolator.py  # Skew 插值单元测试 🆕
+│   │   └── test_risk_signals.py        # Z-Score 边界测试 🆕
+│   ├── test_data_ingestion/
+│   ├── test_integration/
+│   │   └── test_pipeline.py            # 集成测试骨架 🆕
 │   └── test_presentation/
 ├── .env.template            # 环境变量模板
 ├── pyproject.toml           # 项目依赖与配置
@@ -203,7 +208,7 @@ project-root/
 
 1. 从 Polygon.io 获取指定标的约30天到期的完整期权链快照（含 Greeks）
 2. 剔除 Bid/Ask 价差异常和 IV 缺失的脏数据
-3. 分别对 Put 和 Call 在 Delta-IV 平面上做三次样条插值
+3. 分别对 Put 和 Call 在 Delta-IV 平面上做 PCHIP 单调保形样条插值（v1.2 默认；可选 CubicSpline）
 4. 在插值曲线上查询 25Δ 对应的隐含波动率
 5. 计算：`Skew_spread = IV_Put_25Δ - IV_Call_25Δ`
 
@@ -223,11 +228,11 @@ project-root/
 
 | 层级 | 核心技术 |
 |------|---------|
-| 数据接入 | `httpx` (异步HTTP), `tenacity` (重试), `fredapi`, Polygon REST API, FINRA 网页爬取 |
-| 计算引擎 | `numpy`, `scipy` (样条插值), `pandas` (时间序列), 滚动 Z-Score 统计检验 |
-| 数据存储 | 本地 JSON (原始), Parquet/`pyarrow` (处理后) |
-| 展现预警 | `FastAPI` (Web 服务), `Plotly` (交互式图表), `uvicorn` (ASGI 服务器), `rich` (终端), `loguru` (日志) |
-| 任务调度 | `APScheduler` (Cron) |
+| 数据接入 | `httpx` (异步HTTP), `tenacity` (重试), `fredapi`, Polygon REST API, `yfinance` 备用源, FINRA 网页爬取 |
+| 计算引擎 | `numpy`, `scipy` (PCHIP/CubicSpline 插值), `pandas` (时间序列), 滚动 Z-Score 统计检验 |
+| 数据存储 | 本地 JSON (原始), Parquet/`pyarrow` (处理后), 数据溯源 (data_source 字段) |
+| 展现预警 | `FastAPI` (Web 服务, API Key 认证), `Plotly` (交互式图表), `uvicorn` (ASGI), `rich` (终端), `loguru` (日志) |
+| 任务调度 | `APScheduler` (Cron) + NYSE 交易日历 + last_run.json 状态持久化 |
 | 开发质量 | `pytest`, `ruff`, `pre-commit` |
 
 ---
@@ -249,6 +254,20 @@ project-root/
 - [x] Phase 2 (Week 2): 插值算法与矩阵对比
 - [x] Phase 3 (Week 3): 自动化看板对接
 - [x] Phase 4 (v1.1): Web UI 看板替代 Google Sheets + FINRA 自动爬取 + 跨标的统计检验
+- [x] Phase 5 (v1.2): PCHIP 插值 + yfinance 备用源降级 + VXN 接入 + NYSE 交易日历 + Web UI 深化 + 测试覆盖
+
+### v1.2 变更摘要
+
+| 缺口 | 修复方式 | 涉及文件 |
+|:--|:--|:--|
+| CubicSpline 对稀疏链不稳定 | 换用 PCHIP 单调保形样条插值 | `delta_interpolator.py` |
+| DTE 窗口模糊、Bid/Ask 算术均值 | DTE 严格 [25,35] + VWMP 成交量加权中点 + OI>0 过滤 | `data_cleaner.py` |
+| Polygon 单点故障无降级 | yfinance 备用源自动降级 + data_source 溯源字段 | `fallback_source.py`, `eod_fetcher.py` |
+| VXN 死代码未接入 | 独立拉取 Cboe VXN 历史序列 + 期限结构方法 | `vix_client.py` |
+| 无数据新鲜度校验 | `load_master_snapshot()` 检查最新日期是否在 3 天内 | `data_writer.py` |
+| 节假日空跑污染历史数据 | NYSE 交易日历前置判断 + `last_run.json` 状态持久化 | `scheduler.py` |
+| Web UI 无自动刷新/认证/宏观面板/移动端 | meta refresh + API Key 中间件 + 宏观流动性图表 + CSS 响应式 | `web_dashboard.py` |
+| 核心逻辑无测试覆盖 | Skew 插值单元测试 + Z-Score 边界测试 + 集成测试骨架 | `tests/test_calculation/`, `tests/test_integration/` |
 
 ### v1.1 变更摘要
 

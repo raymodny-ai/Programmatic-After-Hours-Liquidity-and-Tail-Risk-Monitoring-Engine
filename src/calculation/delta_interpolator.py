@@ -1,9 +1,10 @@
 """
-固定 Delta 隐含波动率插值模块 (delta_interpolator.py)
+固定 Delta 隐含波动率插值模块 (delta_interpolator.py) v1.2
 
 功能：
 - 基于 scipy 样条插值，从离散期权链中精准定位 25Δ Put 和 25Δ Call 的 IV
-- 支持 Cubic Spline（三次样条）和 Linear 插值方法
+- 支持 PCHIP（单调保形）、Cubic Spline 和 Linear 插值方法
+- v1.2: 新增 PCHIP 单调样条，对稀疏期权链（如 DIA）更稳健
 - 对 Call 和 Put 分别插值（因为 IV Skew 在 Call/Put 之间是不连续的）
 
 核心算法：
@@ -23,7 +24,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from loguru import logger
-from scipy.interpolate import CubicSpline, interp1d
+from scipy.interpolate import CubicSpline, PchipInterpolator, interp1d
 
 from config.settings import (
     TARGET_DELTA_CALL,
@@ -53,7 +54,8 @@ class DeltaIVInterpolator:
         Args:
             target_delta_put: 目标 Put Delta（正数，如 0.25 表示 25Δ）
             target_delta_call: 目标 Call Delta（正数，如 0.25 表示 25Δ）
-            method: 插值方法 ("cubic_spline" 或 "linear")
+            method: 插值方法 ("pchip", "cubic_spline" 或 "linear")
+                - pchip: 单调保形三次 Hermite 插值（v1.2 推荐，对稀疏链稳健）
         """
         self.target_delta_put = target_delta_put
         self.target_delta_call = target_delta_call
@@ -89,7 +91,10 @@ class DeltaIVInterpolator:
         y = ivs[unique_indices]
 
         try:
-            if self.method == "cubic_spline":
+            if self.method == "pchip":
+                # v1.2: PCHIP 单调保形样条，对稀疏期权链更稳健
+                interpolator = PchipInterpolator(x, y, extrapolate=False)
+            elif self.method == "cubic_spline":
                 interpolator = CubicSpline(x, y, extrapolate=False)
             else:
                 interpolator = interp1d(

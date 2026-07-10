@@ -1,7 +1,13 @@
 """
-本地 Web 风险看板 (web_dashboard.py)
+本地 Web 风险看板 (web_dashboard.py) v1.2
 
 替代原 Google Sheets 推送，提供浏览器端交互式数据可视化。
+
+v1.2 新增:
+    - 自动刷新（每 5 分钟 meta refresh）
+    - API Key 认证中间件（X-API-Key Header）
+    - 月度宏观流动性面板（Margin Debt / M2 Ratio 图表）
+    - 移动端响应式布局（CSS Grid）
 
 启动方式:
     python -m src.presentation.web_dashboard
@@ -11,21 +17,23 @@
 
 API 端点:
     GET  /                   主看板页面（HTML）
-    GET  /api/latest         最新一日风险快照（JSON）
+    GET  /api/latest         最新一日风险快照（JSON，需认证）
     GET  /api/history/{ticker}  指定标的历史 Skew 数据（JSON）
     GET  /api/export/csv     导出全部历史数据为 CSV
+    GET  /api/macro          宏观流动性数据（JSON，v1.2）
 """
 
 from datetime import date, datetime
 from io import StringIO
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from loguru import logger
 
 from src.data_ingestion.data_writer import DataWriter
@@ -47,6 +55,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── v1.2: API Key 认证中间件 ──
+_API_KEY = os.getenv("WEB_DASHBOARD_API_KEY", "")
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """对 /api/ 端点进行 X-API-Key 认证。"""
+    if request.url.path.startswith("/api/") and _API_KEY:
+        # /api/export/csv 和主页面不需要认证
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key != _API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "unauthorized", "message": "请提供有效的 X-API-Key"},
+            )
+    response = await call_next(request)
+    return response
 
 _writer = DataWriter()
 
@@ -379,6 +405,7 @@ async def dashboard(ticker_filter: Optional[str] = Query(None, alias="ticker")):
     skew_chart = _build_skew_chart(df)
     cross_chart = _build_cross_asset_chart(df)
     zscore_chart = _build_zscore_chart(df)
+    macro_chart = _build_macro_chart()
     alert_table = _build_alert_table(df)
     summary_cards = _build_summary_cards(df)
 
@@ -394,6 +421,7 @@ async def dashboard(ticker_filter: Optional[str] = Query(None, alias="ticker")):
         skew_chart=skew_chart,
         zscore_chart=zscore_chart,
         cross_chart=cross_chart,
+        macro_chart=macro_chart,
     )
     return HTMLResponse(content=html)
 
@@ -506,6 +534,102 @@ async def api_stats():
     }
 
 
+# ── v1.2: 宏观流动性 API ──
+
+@app.get("/api/macro")
+async def api_macro():
+    """
+    返回宏观流动性分析数据（FINRA Margin Debt / M2 Ratio）。
+
+    数据来源：已缓存的月度宏观分析结果。
+    """
+    from config.settings import PROCESSED_DATA_DIR
+
+    macro_file = Path(PROCESSED_DATA_DIR) / "macro_leverage_snapshot.parquet"
+    if not macro_file.exists():
+        return {"status": "empty", "message": "暂无宏观流动性数据，请先运行 python -m src.main --macro"}
+
+    try:
+        df = pd.read_parquet(macro_file)
+        df["date_margin"] = pd.to_datetime(df["date_margin"])
+        df = df.sort_values("date_margin")
+
+        return {
+            "status": "ok",
+            "count": len(df),
+            "latest": {
+                "date": df["date_margin"].max().strftime("%Y-%m-%d"),
+                "leverage_ratio": round(float(df["leverage_ratio"].iloc[-1]) * 100, 2),
+                "margin_debt": float(df["margin_debt"].iloc[-1]),
+                "m2_supply": float(df["m2_supply"].iloc[-1]),
+            },
+            "history": df.where(pd.notna(df), None).to_dict(orient="records"),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# v1.2: 宏观流动性图表
+# ---------------------------------------------------------------------------
+
+
+def _build_macro_chart() -> str:
+    """生成宏观流动性杠杆占比历史走势图。"""
+    from config.settings import PROCESSED_DATA_DIR
+
+    macro_file = Path(PROCESSED_DATA_DIR) / "macro_leverage_snapshot.parquet"
+    if not macro_file.exists():
+        return '<p style="color:#8b949e; padding:40px; text-align:center">暂无宏观流动性数据。运行 <code>python -m src.main --macro</code> 后刷新。</p>'
+
+    try:
+        df = pd.read_parquet(macro_file)
+        df["date_margin"] = pd.to_datetime(df["date_margin"])
+        df = df.sort_values("date_margin")
+
+        fig = go.Figure()
+
+        # 杠杆占比折线
+        fig.add_trace(
+            go.Scatter(
+                x=df["date_margin"],
+                y=df["leverage_ratio"] * 100,
+                mode="lines+markers",
+                name="杠杆占比 (%)",
+                line=dict(color="#58a6ff", width=2),
+                marker=dict(size=4),
+                hovertemplate="日期: %{x}<br>杠杆占比: %{y:.2f}%<extra></extra>",
+            )
+        )
+
+        # 6% 阈值线
+        fig.add_hline(
+            y=6.0,
+            line_dash="dash",
+            line_color="#f85149",
+            opacity=0.7,
+            annotation_text="6% 预警阈值",
+        )
+
+        fig.update_layout(
+            title="宏观杠杆占比: Margin Debt / M2 Supply",
+            xaxis_title="日期",
+            yaxis_title="杠杆占比 (%)",
+            height=380,
+            plot_bgcolor="#0d1117",
+            paper_bgcolor="#0d1117",
+            font=dict(color="#c9d1d9", size=12),
+            legend=dict(bgcolor="#161b22", bordercolor="#30363d", borderwidth=1),
+            margin=dict(l=50, r=20, t=50, b=50),
+            xaxis=dict(gridcolor="#21262d"),
+            yaxis=dict(gridcolor="#21262d"),
+        )
+        return fig.to_html(full_html=False, include_plotlyjs=False, config={"displayModeBar": True})
+
+    except Exception as e:
+        return f'<p style="color:#f85149; padding:20px">宏观数据加载失败: {e}</p>'
+
+
 # ---------------------------------------------------------------------------
 # HTML 渲染
 # ---------------------------------------------------------------------------
@@ -520,19 +644,31 @@ def _render_page(
     skew_chart: str,
     zscore_chart: str,
     cross_chart: str,
+    macro_chart: str = "",
 ) -> str:
-    """渲染完整的看板 HTML 页面。"""
+    """渲染完整的看板 HTML 页面（v1.2: 含自动刷新、宏观面板、响应式布局）。"""
     alert_badge = (
         f'<span class="badge badge-alert">⚠ {alert_count} 预警</span>'
         if alert_count > 0
         else '<span class="badge badge-ok">✓ 正常</span>'
     )
 
+    macro_section = ""
+    if macro_chart:
+        macro_section = f"""
+        <div class="section">
+            <div class="section-title">
+                <span class="icon">🏦</span> 宏观流动性面板 - Margin Debt / M2 Ratio
+            </div>
+            <div class="chart-box">{macro_chart}</div>
+        </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="300">
     <title>尾部风险监控看板 | After-Hours Tail Risk Monitor</title>
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -663,12 +799,27 @@ def _render_page(
             font-size: 11px;
             border-top: 1px solid #21262d;
         }}
+        /* ── v1.2: 移动端响应式 ── */
+        @media (max-width: 768px) {{
+            .header {{ flex-wrap: wrap; padding: 12px 16px; gap: 8px; }}
+            .header h1 {{ font-size: 14px; }}
+            .date-tag {{ margin-left: 0; font-size: 10px; }}
+            .header-actions {{ margin-left: 0; }}
+            .main {{ padding: 12px 12px; }}
+            .cards {{ flex-direction: column; }}
+            .metric-card {{ min-width: 100%; padding: 12px; }}
+            .metric-value {{ font-size: 20px; }}
+            .chart-box {{ padding: 8px; }}
+            .alert-table th, .alert-table td {{ padding: 6px 8px; font-size: 11px; }}
+            .btn {{ padding: 4px 10px; font-size: 10px; }}
+            .section-title {{ font-size: 13px; }}
+        }}
     </style>
 </head>
 <body>
     <div class="header">
         <h1>🛡 程序化盘后尾部风险监控引擎</h1>
-        <span class="badge badge-info">Web UI v1.1</span>
+        <span class="badge badge-info">Web UI v1.2</span>
         {alert_badge}
         <span class="date-tag">最新数据: {latest_date} | 总计 {total_records} 条记录</span>
         <div class="header-actions">
@@ -711,6 +862,7 @@ def _render_page(
             </div>
             <div class="chart-box">{cross_chart}</div>
         </div>
+        {macro_section}
     </div>
     <div class="footer">
         程序化盘后流动性与尾部风险监控引擎 &copy; 2024-2026 |

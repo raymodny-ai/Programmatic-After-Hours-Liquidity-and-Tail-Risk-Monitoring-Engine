@@ -1,8 +1,10 @@
 """
-任务调度器模块 (scheduler.py) v1.1
+任务调度器模块 (scheduler.py) v1.2
 
 功能：
 - 使用 APScheduler 配置每日盘后（美东时间 17:00）自动执行
+- v1.2: 集成 NYSE 交易日历，节假日自动跳过
+- v1.2: last_run.json 状态持久化，重启后可感知执行历史
 - 支持 Windows 任务计划程序 / Linux cron 作为备选方案
 - 提供调度器的启动、停止和状态查询
 - 集成 VIX 期限结构、FINRA 自动爬取、跨标的统计检验
@@ -19,8 +21,10 @@
 """
 
 import asyncio
+import json
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -29,6 +33,21 @@ from loguru import logger
 
 from src.main import run_full_pipeline
 from src.presentation.logging_setup import setup_logging
+
+# ── v1.2: NYSE 交易日历（可选依赖）──
+try:
+    import pandas_market_calendars as mcal
+
+    _nyse_calendar = mcal.get_calendar("NYSE")
+    _has_trading_calendar = True
+    logger.debug("NYSE 交易日历已加载")
+except ImportError:
+    _nyse_calendar = None
+    _has_trading_calendar = False
+    logger.debug("pandas_market_calendars 未安装，交易日历功能不可用")
+
+# ── v1.2: 任务状态文件路径 ──
+LAST_RUN_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "last_run.json"
 
 
 class PipelineScheduler:
@@ -98,19 +117,34 @@ class PipelineScheduler:
         logger.info("已配置月度宏观分析任务: 美东时间 每月1日 18:00")
 
     async def _run_daily_pipeline(self) -> None:
-        """每日流水线执行包装（带异常保护）。"""
+        """每日流水线执行包装（v1.2: 含交易日检查和状态持久化）。"""
         logger.info("=" * 60)
         logger.info(f"定时任务触发: 每日 EOD 流水线 ({datetime.now().isoformat()})")
         logger.info("=" * 60)
+
+        # ── v1.2: NYSE 交易日历检查 ──
+        if not self._is_trading_day():
+            logger.info("今日为非交易日（节假日/周末），跳过流水线执行")
+            return
+
+        # ── v1.2: 检查今日是否已执行 ──
+        last = self._load_last_run()
+        today_str = date.today().isoformat()
+        if last.get("date") == today_str and last.get("status") == "success":
+            logger.info(f"今日 ({today_str}) 已成功执行，跳过重复运行")
+            return
 
         try:
             result = await run_full_pipeline()
             if "error" in result:
                 logger.error(f"每日流水线执行异常: {result['error']}")
+                self._save_last_run(today_str, "failed", str(result.get("error", "")))
             else:
                 logger.info("每日流水线执行成功")
+                self._save_last_run(today_str, "success")
         except Exception as e:
             logger.exception(f"每日流水线执行失败: {e}")
+            self._save_last_run(date.today().isoformat(), "failed", str(e))
 
     async def _run_monthly_macro(self, margin_debt_csv: Optional[str] = None) -> None:
         """月度宏观分析执行包装。"""
@@ -128,6 +162,46 @@ class PipelineScheduler:
                 logger.info("月度宏观分析执行成功")
         except Exception as e:
             logger.exception(f"月度宏观分析执行失败: {e}")
+
+    def _is_trading_day(self) -> bool:
+        """v1.2: 检查今天是否为 NYSE 交易日。"""
+        if not _has_trading_calendar:
+            # 无交易日历时，仅跳过周末
+            today = date.today()
+            return today.weekday() < 5  # 周一=0, 周日=6
+        try:
+            today = date.today()
+            schedule = _nyse_calendar.schedule(
+                start_date=today,
+                end_date=today,
+            )
+            return not schedule.empty
+        except Exception:
+            return True  # 容错：日历查询失败时默认执行
+
+    def _load_last_run(self) -> dict:
+        """v1.2: 加载上次执行状态。"""
+        try:
+            if LAST_RUN_FILE.exists():
+                return json.loads(LAST_RUN_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def _save_last_run(self, run_date: str, status: str, error: str = "") -> None:
+        """v1.2: 持久化执行状态到 last_run.json。"""
+        try:
+            LAST_RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LAST_RUN_FILE.write_text(
+                json.dumps(
+                    {"date": run_date, "status": status, "error": error, "timestamp": datetime.now().isoformat()},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.debug(f"无法写入 last_run.json: {e}")
 
     def start(self, blocking: bool = True) -> None:
         """

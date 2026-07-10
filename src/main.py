@@ -37,7 +37,7 @@ from src.presentation.terminal_alerts import print_full_report
 
 async def run_full_pipeline() -> dict[str, Any]:
     """
-    运行完整的 ETL 流水线 (V1.1 - Web UI 版)。
+    运行完整的 ETL 流水线 (V1.2 - Web UI 版)。
 
     流程:
         1. 验证配置
@@ -231,6 +231,14 @@ async def run_monthly_macro_pipeline(
         # 终端输出
         print_macro_leverage_status(result)
 
+        # ── v1.2: 保存宏观分析结果供 Web 看板读取 ──
+        if "historical_ratios" in result:
+            macro_df = result["historical_ratios"]
+            from config.settings import PROCESSED_DATA_DIR
+            macro_file = PROCESSED_DATA_DIR / "macro_leverage_snapshot.parquet"
+            macro_df.to_parquet(macro_file, index=False)
+            logger.info(f"宏观分析结果已保存: {macro_file}")
+
         return result
 
     except Exception as e:
@@ -241,7 +249,7 @@ async def run_monthly_macro_pipeline(
 def parse_args():
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
-        description="程序化盘后流动性与尾部风险监控引擎 v1.1",
+        description="程序化盘后流动性与尾部风险监控引擎 v1.2",
     )
 
     parser.add_argument(
@@ -295,7 +303,7 @@ async def async_main():
     # 初始化日志
     setup_logging()
 
-    logger.info("程序化盘后流动性与尾部风险监控引擎 v1.1 启动")
+    logger.info("程序化盘后流动性与尾部风险监控引擎 v1.2 启动")
     logger.info(f"运行模式: {args.mode}")
 
     # ── push-only: 仅启动 Web 看板 ──

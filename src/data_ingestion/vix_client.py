@@ -1,19 +1,21 @@
 """
-VIX / VXN 期货期限结构数据获取客户端 (vix_client.py)
+VIX / VXN 期货期限结构数据获取客户端 (vix_client.py) v1.2
 
 功能：
-- 从 Cboe 公开 CSV 获取 VIX 期货结算价历史数据
+- 从 Cboe 公开 CSV 获取 VIX / VXN 期货结算价历史数据
 - 提取近月与次月 VIX 期货价差
 - 判断波动率期限结构是否发生倒挂（Inversion）
+- v1.2: 新增 VXN（纳斯达克波动率指数）独立接入
 
 数据来源:
     Cboe VIX Futures Historical Data (CSV)
     https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv
+    https://cdn.cboe.com/api/global/us_indices/daily_prices/VXN_History.csv
 
 说明:
     VIX Central 和 Cboe 均提供公开的 VIX 期货历史数据。
     当前实现基于 Cboe 公开 CSV，无需 API 密钥。
-    如需 VXN 数据，Cboe 也有相应的历史 CSV 文件。
+    VXN 是纳斯达克100波动率指数，用于 QQQ 相关的波动率分析。
 """
 
 from datetime import date, datetime, timedelta
@@ -31,10 +33,16 @@ class VIXClient:
     VIX / VXN 期货数据客户端。
 
     主要接口:
-        fetch_vix_history() -> 获取 VIX 期货历史结算价 DataFrame
-        get_term_structure() -> 获取近月/次月期货价差
-        check_inversion() -> 检测期限结构是否倒挂
+        fetch_vix_history()   -> 获取 VIX 期货历史结算价 DataFrame
+        fetch_vxn_history()   -> 获取 VXN 期货历史结算价 DataFrame (v1.2)
+        get_term_structure()  -> 获取近月/次月期货价差
+        check_inversion()     -> 检测期限结构是否倒挂
     """
+
+    # v1.2: VXN 数据 URL
+    VXN_FUTURES_URL: str = (
+        "https://cdn.cboe.com/api/global/us_indices/daily_prices/VXN_History.csv"
+    )
 
     def __init__(self, futures_csv_url: Optional[str] = None) -> None:
         self.futures_csv_url = futures_csv_url or CBOE_VIX_FUTURES_URL
@@ -149,3 +157,56 @@ class VIXClient:
         result["is_inverted"] = result["f1"] > result["f2"]
         result["spread"] = result["f2"] - result["f1"]
         return result.tail(lookback_days)
+
+    # ── v1.2: VXN 独立接入 ──
+
+    async def fetch_vxn_history(self) -> pd.DataFrame:
+        """
+        从 Cboe 公开 CSV 获取 VXN（纳斯达克波动率指数）期货历史数据。
+
+        VXN 是纳斯达克100指数的波动率指数，等价于 QQQ 的 "VIX"。
+        对 QQQ 的期限结构分析应使用 VXN 而非 VIX。
+
+        Returns:
+            DataFrame，结构同 fetch_vix_history()
+        """
+        logger.info(f"[VXN] 从 Cboe 拉取 VXN 期货历史数据: {self.VXN_FUTURES_URL}")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(self.VXN_FUTURES_URL)
+            response.raise_for_status()
+
+            from io import StringIO
+
+            lines = response.text.splitlines()
+            header_idx = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith("Date"):
+                    header_idx = i
+                    break
+
+            csv_content = "\n".join(lines[header_idx:])
+            df = pd.read_csv(StringIO(csv_content))
+
+            df.columns = [c.strip().lower() for c in df.columns]
+            date_col = df.columns[0]
+            df = df.rename(columns={date_col: "date"})
+            df["date"] = pd.to_datetime(df["date"])
+
+            logger.info(
+                f"[VXN] 成功获取 VXN 期货数据: {len(df)} 条记录, "
+                f"日期范围 {df['date'].min().date()} -> {df['date'].max().date()}"
+            )
+            return df
+
+    def get_vxn_term_structure(
+        self,
+        df: pd.DataFrame,
+        as_of_date: Optional[date] = None,
+    ) -> dict:
+        """
+        计算 VXN 期限结构（同 get_term_structure，但用于 VXN 数据）。
+
+        用法与 get_term_structure() 完全相同。
+        """
+        return self.get_term_structure(df, as_of_date=as_of_date)

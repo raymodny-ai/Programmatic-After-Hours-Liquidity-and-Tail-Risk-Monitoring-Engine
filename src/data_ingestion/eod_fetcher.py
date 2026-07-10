@@ -66,7 +66,7 @@ async def fetch_single_ticker(
     target_date: date,
 ) -> Optional[dict[str, Any]]:
     """
-    抓取单个标的的期权快照数据并保存。
+    抓取单个标的的期权快照数据并保存（v1.2: 含 yfinance 降级）。
 
     Args:
         client: Polygon API 客户端
@@ -88,9 +88,26 @@ async def fetch_single_ticker(
             expiration_date=expiration_str,
         )
 
+        # ── v1.2: 若 Polygon 无数据，尝试 yfinance 降级 ──
         if not snapshots:
-            logger.warning(f"[{ticker}] 未获取到期权快照数据 (到期日={expiration_str})")
+            logger.warning(f"[{ticker}] Polygon 未返回数据，尝试 yfinance 备用源...")
+            try:
+                from src.data_ingestion.fallback_source import fetch_options_fallback
+
+                snapshots = await fetch_options_fallback(ticker)
+                if snapshots:
+                    logger.info(f"[{ticker}] yfinance 备用源成功: {len(snapshots)} 条快照")
+            except ImportError:
+                logger.warning("[{ticker}] yfinance 未安装，跳过备用源")
+            except Exception as fe:
+                logger.error(f"[{ticker}] yfinance 备用源异常: {fe}")
+
+        if not snapshots:
+            logger.warning(f"[{ticker}] 所有数据源均未获取到期权快照 (到期日={expiration_str})")
             return None
+
+        # 标注数据源（v1.2: 溯源审计）
+        data_source = snapshots[0].get("_data_source", "polygon") if snapshots else "polygon"
 
         # 构造数据记录
         data_record = {
@@ -99,6 +116,7 @@ async def fetch_single_ticker(
             "expiration_date": expiration_str,
             "snapshot_count": len(snapshots),
             "snapshots": snapshots,
+            "data_source": data_source,  # v1.2: 溯源字段
         }
 
         # 保存到本地
