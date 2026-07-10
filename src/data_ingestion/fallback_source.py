@@ -260,6 +260,7 @@ def _row_to_snapshot(
         },
         "_data_source": "yfinance",
         "_greeks_source": greeks_source,  # v1.2.1
+        "_signal_quality": "fallback_estimated",  # v1.2.1: 综合质量标记
         "_spot_used": market_context["spot"] if market_context else None,
         "_risk_free_rate_used": (
             market_context["risk_free_rate"] if market_context else None

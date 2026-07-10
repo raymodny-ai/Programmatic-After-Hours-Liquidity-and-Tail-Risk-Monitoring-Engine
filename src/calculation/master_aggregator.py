@@ -81,6 +81,8 @@ def build_daily_risk_snapshot(
             "put_data_points": result.get("put_data_points", 0),
             "call_data_points": result.get("call_data_points", 0),
             "data_source": result.get("data_source", "unknown"),  # v1.2.1
+            "greeks_source": result.get("greeks_source", "none"),  # v1.2.1
+            "signal_quality": result.get("signal_quality", "unavailable"),  # v1.2.1
             "error": result.get("error"),
         }
         records.append(record)
@@ -179,6 +181,16 @@ def aggregate_results(
         "macro_leverage": macro_leverage_result,
         "volatility_regime": volatility_regime,  # v1.2.1
         "daily_snapshot_df": snapshot_df,
+        "skipped_tickers": [  # v1.2.1: 收集跳过的标的供看板展示
+            {
+                "ticker": t,
+                "skip_reason": r.get("skip_reason", "unknown"),
+                "data_source": r.get("data_source", "unknown"),
+                "signal_quality": r.get("signal_quality", "unavailable"),
+            }
+            for t, r in skew_results.items()
+            if r.get("status") == "skipped"
+        ],
     }
 
     # 汇总日志

@@ -311,6 +311,76 @@ def _build_alert_table(df: pd.DataFrame) -> str:
     </table>"""
 
 
+def _build_skipped_section() -> str:
+    """生成今日跳过标的展示区域（v1.2.1）。
+
+    读取 skipped_tickers_snapshot.json，展示被跳过的标的及原因。
+    """
+    from config.settings import PROCESSED_DATA_DIR
+    import json
+
+    skip_file = Path(PROCESSED_DATA_DIR) / "skipped_tickers_snapshot.json"
+    if not skip_file.exists():
+        return ""
+
+    try:
+        data = json.loads(skip_file.read_text(encoding="utf-8"))
+        skipped = data.get("skipped_tickers", [])
+    except Exception:
+        return ""
+
+    if not skipped:
+        return '<p style="color:#3fb950; font-size:14px; padding:12px 16px">✅ 今日所有标的均成功获取数据。</p>'
+
+    rows = ""
+    for s in skipped:
+        ticker = s.get("ticker", "?")
+        reason = s.get("skip_reason", "unknown")
+        ds = s.get("data_source", "unknown")
+        sq = s.get("signal_quality", "unavailable")
+
+        # 数据源标签颜色
+        ds_color = "#3fb950" if ds == "polygon" else ("#d29922" if ds == "yfinance" else "#8b949e")
+        ds_label = ds.upper() if ds != "unknown" else "?"
+
+        # 原因中文翻译
+        reason_map = {
+            "no_expiry_in_dte_window": "DTE 窗口内无到期日",
+            "清洗后数据为空": "清洗后数据为空",
+            "all_records_filtered_by_quality": "质量过滤后无有效记录",
+            "delta_interpolation_returned_none": "Delta 插值返回 None",
+            "delta_interpolation_returned_nan_or_inf": "Delta 插值返回 NaN/Inf",
+            "skew_calculation_failed": "Skew 计算失败",
+        }
+        reason_display = reason
+        for k, v in reason_map.items():
+            if k in reason:
+                reason_display = v
+                break
+
+        rows += f"""<tr>
+            <td><span style="font-weight:bold;color:#f85149">{ticker}</span></td>
+            <td><span style="color:{ds_color};font-size:10px;background:#161b22;padding:1px 6px;border-radius:6px">{ds_label}</span></td>
+            <td style="color:#8b949e;font-size:12px">{reason_display}</td>
+            <td style="color:#f0883e;font-size:11px">{sq}</td>
+        </tr>"""
+
+    return f"""
+    <div class="section">
+        <div class="section-title">
+            <span class="icon">⚠️</span> 今日跳过标的 ({len(skipped)} 个) <span style="color:#8b949e;font-size:11px;font-weight:normal;margin-left:8px">以下标的本日未纳入风险快照</span>
+        </div>
+        <div class="alert-box">
+            <table class="alert-table">
+                <thead><tr>
+                    <th>标的</th><th>数据源</th><th>跳过原因</th><th>信号质量</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>
+    </div>"""
+
+
 def _build_summary_cards(df: pd.DataFrame) -> str:
     """生成最新一日各标的摘要卡片（v1.2.1: 含 data_source 质量标记）。"""
     latest_date = df["date"].max()
@@ -335,18 +405,31 @@ def _build_summary_cards(df: pd.DataFrame) -> str:
         iv_put_str = f"{iv_put:.4f}" if iv_put is not None else "-"
         iv_call_str = f"{iv_call:.4f}" if iv_call is not None else "-"
 
-        # ── v1.2.1: data_source 质量标记 ──
+        # ── v1.2.1: data_source 质量标记（三层: PRIMARY / FALLBACK EST / BSM）──
         data_source = row.get("data_source", "polygon")
+        greeks_source = row.get("greeks_source", "vendor")
+        signal_quality = row.get("signal_quality", "primary")
+
         source_badge = ""
-        if data_source == "yfinance":
+        if signal_quality == "fallback_estimated" or data_source == "yfinance":
             source_badge = (
                 '<span style="background:#d29922;color:#0d1117;font-size:10px;'
-                'padding:1px 6px;border-radius:8px;margin-left:6px">EST</span>'
+                'padding:1px 6px;border-radius:8px;margin-left:6px">FALLBACK EST</span>'
             )
+            if greeks_source == "bsm_estimated":
+                source_badge += (
+                    '<span style="background:#f0883e;color:#0d1117;font-size:9px;'
+                    'padding:0px 4px;border-radius:6px;margin-left:2px">BSM</span>'
+                )
         elif data_source == "polygon":
             source_badge = (
                 '<span style="background:#3fb950;color:#0d1117;font-size:10px;'
                 'padding:1px 6px;border-radius:8px;margin-left:6px">PRIMARY</span>'
+            )
+        elif signal_quality == "unavailable":
+            source_badge = (
+                '<span style="background:#8b949e;color:#0d1117;font-size:10px;'
+                'padding:1px 6px;border-radius:8px;margin-left:6px">UNAVAIL</span>'
             )
 
         cards += f"""
@@ -425,6 +508,7 @@ async def dashboard(ticker_filter: Optional[str] = Query(None, alias="ticker")):
     volatility_cards = _build_volatility_cards()  # v1.2.1
     alert_table = _build_alert_table(df)
     summary_cards = _build_summary_cards(df)
+    skipped_section = _build_skipped_section()  # v1.2.1
 
     # 统计数据
     alert_count = len(df[(df["date"] == df["date"].max()) & (df["alert_flag"] == True)])
@@ -440,6 +524,7 @@ async def dashboard(ticker_filter: Optional[str] = Query(None, alias="ticker")):
         cross_chart=cross_chart,
         macro_chart=macro_chart,
         volatility_cards=volatility_cards,
+        skipped_section=skipped_section,
     )
     return HTMLResponse(content=html)
 
@@ -544,11 +629,35 @@ async def api_stats():
             "alert_days": int(sub["alert_flag"].sum()),
         }
 
+    # ── v1.2.1: signal_quality 统计 ──
+    quality_counts = {}
+    if "signal_quality" in df.columns:
+        quality_counts = (
+            df[df["date"] == latest_date]["signal_quality"]
+            .value_counts()
+            .to_dict()
+        )
+
+    # ── v1.2.1: 跳过标的信息 ──
+    from config.settings import PROCESSED_DATA_DIR
+    skip_file = Path(PROCESSED_DATA_DIR) / "skipped_tickers_snapshot.json"
+    skipped_today = []
+    if skip_file.exists():
+        try:
+            import json as _json
+            skip_data = _json.loads(skip_file.read_text(encoding="utf-8"))
+            skipped_today = skip_data.get("skipped_tickers", [])
+        except Exception:
+            pass
+
     return {
         "oldest_date": oldest_date.strftime("%Y-%m-%d"),
         "latest_date": latest_date.strftime("%Y-%m-%d"),
         "total_records": len(df),
         "ticker_stats": ticker_stats,
+        "signal_quality_distribution": quality_counts,  # v1.2.1
+        "skipped_today": len(skipped_today),  # v1.2.1
+        "skipped_tickers": skipped_today,  # v1.2.1
     }
 
 
@@ -650,6 +759,38 @@ async def api_vxn_alert():
         "vxn_alert": vxn_data,
         "alert_state": alert_state,
     }
+
+
+# ── v1.2.1: 跳过标的 API ──
+
+
+@app.get("/api/skipped")
+async def api_skipped():
+    """返回今日跳过的标的列表及跳过原因（v1.2.1）。
+
+    数据来源：main.py 流水线持久化的 skipped_tickers_snapshot.json。
+    """
+    from config.settings import PROCESSED_DATA_DIR
+
+    skip_file = Path(PROCESSED_DATA_DIR) / "skipped_tickers_snapshot.json"
+    if not skip_file.exists():
+        return {
+            "status": "empty",
+            "message": "暂无跳过数据，请先运行流水线",
+            "skipped_tickers": [],
+        }
+
+    try:
+        import json as _json
+        data = _json.loads(skip_file.read_text(encoding="utf-8"))
+        return {
+            "status": "ok",
+            "date": data.get("date", ""),
+            "skipped_count": len(data.get("skipped_tickers", [])),
+            "skipped_tickers": data.get("skipped_tickers", []),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "skipped_tickers": []}
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +997,7 @@ def _render_page(
     cross_chart: str,
     macro_chart: str = "",
     volatility_cards: str = "",
+    skipped_section: str = "",
 ) -> str:
     """渲染完整的看板 HTML 页面（v1.2.1: 含波动率面板）。"""
     alert_badge = (
@@ -1052,6 +1194,7 @@ def _render_page(
             </div>
             <div class="alert-box">{alert_table}</div>
         </div>
+        {skipped_section}
 
         <div class="section">
             <div class="section-title">

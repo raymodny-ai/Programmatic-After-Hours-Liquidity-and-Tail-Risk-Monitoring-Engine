@@ -279,6 +279,9 @@ async def run_full_pipeline() -> dict[str, Any]:
         vxn_alert=vxn_alert_result,
     )
 
+    # ── v1.2.1: 保存跳过标的快照供 Web 看板展示 ──
+    _save_skipped_tickers_snapshot(aggregated.get("skipped_tickers", []))
+
     # ─────────────────────────────────────────────────────────────
     # Phase 4: 展示层
     # ─────────────────────────────────────────────────────────────
@@ -420,6 +423,35 @@ def _save_volatility_regime_snapshot(
             encoding="utf-8",
         )
         logger.info(f"波动率状态快照已保存: {file_path}")
+
+
+def _save_skipped_tickers_snapshot(skipped_tickers: list[dict[str, Any]]) -> None:
+    """持久化今日跳过标的信息为 JSON（v1.2.1）。
+
+    Web 看板从此文件读取被跳过的标的及原因。
+    """
+    import json as _json
+    from config.settings import PROCESSED_DATA_DIR
+
+    snapshot = {
+        "date": date.today().isoformat(),
+        "skipped_tickers": skipped_tickers,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+    file_path = PROCESSED_DATA_DIR / "skipped_tickers_snapshot.json"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(
+        _json.dumps(snapshot, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    if skipped_tickers:
+        logger.warning(
+            f"跳过标的快照已保存: {file_path} "
+            f"({len(skipped_tickers)} 个标的被跳过)"
+        )
+    else:
+        logger.info(f"跳过标的快照已保存: {file_path} (今日无跳过标的)")
 
 
 def parse_args():

@@ -136,6 +136,45 @@ class TestBSMDelta:
                 option_type="straddle",  # type: ignore[arg-type]
             )
 
+    def test_nan_rate_returns_nan(self):
+        """rate 为 NaN 时 bsm_delta 应返回 NaN（v1.2.1 修复）。"""
+        delta = bsm_delta(
+            spot=100.0,
+            strike=100.0,
+            time_to_expiry=0.08,
+            rate=float("nan"),
+            dividend_yield=0.012,
+            volatility=0.22,
+            option_type="call",
+        )
+        assert np.isnan(delta), f"NaN rate 应返回 NaN，实际={delta}"
+
+    def test_nan_div_yield_returns_nan(self):
+        """dividend_yield 为 NaN 时 bsm_delta 应返回 NaN（v1.2.1 修复）。"""
+        delta = bsm_delta(
+            spot=100.0,
+            strike=100.0,
+            time_to_expiry=0.08,
+            rate=0.045,
+            dividend_yield=float("nan"),
+            volatility=0.22,
+            option_type="put",
+        )
+        assert np.isnan(delta), f"NaN dividend_yield 应返回 NaN，实际={delta}"
+
+    def test_inf_rate_returns_nan(self):
+        """rate 为 Inf 时 bsm_delta 应返回 NaN（v1.2.1 修复）。"""
+        delta = bsm_delta(
+            spot=100.0,
+            strike=100.0,
+            time_to_expiry=0.08,
+            rate=float("inf"),
+            dividend_yield=0.012,
+            volatility=0.22,
+            option_type="call",
+        )
+        assert np.isnan(delta), f"Inf rate 应返回 NaN，实际={delta}"
+
 
 class TestBSMDeltaBatch:
     """BSM Delta 批量计算测试。"""
@@ -189,3 +228,61 @@ class TestBSMDeltaBatch:
         assert np.isnan(batch_deltas[1]), "负 strike 应返回 NaN"
         assert not np.isnan(batch_deltas[0]), "有效元素不应为 NaN"
         assert not np.isnan(batch_deltas[2]), "有效元素不应为 NaN"
+
+    def test_batch_invalid_option_type_returns_nan(self):
+        """批量版中无效 option_type（如 "CALL"、"straddle"）应返回 NaN（v1.2.1 修复）。"""
+        strikes = np.array([100.0, 100.0, 100.0])
+        ivs = np.array([0.22, 0.22, 0.22])
+        types = np.array(["CALL", "put ", "straddle"])  # 大写、空格、非法值
+
+        batch_deltas = bsm_delta_batch(
+            spot=100.0,
+            strikes=strikes,
+            time_to_expiry=0.08,
+            rate=0.045,
+            dividend_yield=0.012,
+            volatilities=ivs,
+            option_types=types,
+        )
+
+        # "CALL" 和 "put " 应被标准化后正确计算
+        assert np.isfinite(batch_deltas[0]), f"大写 CALL 应该有效，实际={batch_deltas[0]}"
+        assert np.isfinite(batch_deltas[1]), f"带空格 put 应该有效，实际={batch_deltas[1]}"
+        # "straddle" 应返回 NaN
+        assert np.isnan(batch_deltas[2]), f"straddle 应返回 NaN，实际={batch_deltas[2]}"
+
+    def test_batch_nan_rate_returns_all_nan(self):
+        """批量版 NaN rate 应全返回 NaN（v1.2.1 修复）。"""
+        strikes = np.array([90.0, 100.0, 110.0])
+        ivs = np.array([0.22, 0.20, 0.24])
+        types = np.array(["put", "call", "call"])
+
+        batch_deltas = bsm_delta_batch(
+            spot=100.0,
+            strikes=strikes,
+            time_to_expiry=0.08,
+            rate=float("nan"),
+            dividend_yield=0.012,
+            volatilities=ivs,
+            option_types=types,
+        )
+
+        assert np.all(np.isnan(batch_deltas)), "NaN rate 应全返回 NaN"
+
+    def test_batch_nan_div_yield_returns_all_nan(self):
+        """批量版 NaN dividend_yield 应全返回 NaN（v1.2.1 修复）。"""
+        strikes = np.array([90.0, 100.0, 110.0])
+        ivs = np.array([0.22, 0.20, 0.24])
+        types = np.array(["put", "call", "call"])
+
+        batch_deltas = bsm_delta_batch(
+            spot=100.0,
+            strikes=strikes,
+            time_to_expiry=0.08,
+            rate=0.045,
+            dividend_yield=float("nan"),
+            volatilities=ivs,
+            option_types=types,
+        )
+
+        assert np.all(np.isnan(batch_deltas)), "NaN dividend_yield 应全返回 NaN"

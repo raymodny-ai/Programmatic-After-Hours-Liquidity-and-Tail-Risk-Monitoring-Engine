@@ -55,8 +55,10 @@ def bsm_delta(
         估计的 Delta 值（call 为正值，put 为负值）
         若输入无效则返回 NaN
     """
-    values = [spot, strike, time_to_expiry, volatility]
-    if any(not np.isfinite(x) or x <= 0 for x in values):
+    values = [spot, strike, time_to_expiry, rate, dividend_yield, volatility]
+    if any(not np.isfinite(x) for x in values):
+        return float("nan")
+    if spot <= 0 or strike <= 0 or time_to_expiry <= 0 or volatility <= 0:
         return float("nan")
 
     sqrt_t = math.sqrt(time_to_expiry)
@@ -103,12 +105,23 @@ def bsm_delta_batch(
     if any(x <= 0 or not np.isfinite(x) for x in [spot, time_to_expiry]):
         return np.full_like(strikes, np.nan, dtype=float)
 
+    if not np.isfinite(rate) or not np.isfinite(dividend_yield):
+        return np.full_like(strikes, np.nan, dtype=float)
+
     valid = (
         np.isfinite(strikes)
         & (strikes > 0)
         & np.isfinite(volatilities)
         & (volatilities > 0)
     )
+
+    # ── v1.2.1: 严格校验 option_types，只接受 "call"/"put" ──
+    types_normalized = np.array(
+        [str(t).strip().lower() for t in option_types.flat],
+        dtype=str,
+    ).reshape(option_types.shape)
+    is_valid_type = (types_normalized == "call") | (types_normalized == "put")
+    valid = valid & is_valid_type
 
     result = np.full_like(strikes, np.nan, dtype=float)
 
@@ -128,7 +141,7 @@ def bsm_delta_batch(
         + (rate - dividend_yield + 0.5 * v_valid ** 2) * t
     ) / (v_valid * sqrt_t)
 
-    is_call = option_types[valid] == "call"
+    is_call = types_normalized[valid] == "call"
     deltas = np.where(
         is_call,
         discount_q * norm.cdf(d1),

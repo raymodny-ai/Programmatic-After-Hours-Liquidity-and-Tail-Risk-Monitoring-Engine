@@ -31,6 +31,8 @@ def skipped_result(
     as_of_date: date,
     reason: str,
     data_source: str = "unknown",
+    greeks_source: str = "none",
+    signal_quality: str = "unavailable",
 ) -> dict[str, Any]:
     """构造标准化的"跳过"结果，防止 NaN 数据进入主快照。"""
     return {
@@ -39,6 +41,8 @@ def skipped_result(
         "status": "skipped",
         "skip_reason": reason,
         "data_source": data_source,
+        "greeks_source": greeks_source,
+        "signal_quality": signal_quality,
         "skew_spread": None,
         "iv_put_25d": None,
         "iv_call_25d": None,
@@ -131,6 +135,8 @@ def process_all_tickers(
 
             # 提取数据源标记
             data_source = _extract_data_source(snapshots)
+            greeks_source = _extract_greeks_source(snapshots, data_source)
+            signal_quality = _extract_signal_quality(snapshots, data_source, greeks_source)
 
             # Step 1: 清洗数据
             df = clean_option_chain(snapshots, ticker)
@@ -139,6 +145,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason="清洗后数据为空",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(f"[{ticker}] 跳过: 清洗后数据为空")
                 continue
@@ -150,6 +158,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason="no_expiry_in_dte_window",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(f"[{ticker}] 跳过: DTE [25,35] 窗口内无到期日")
                 continue
@@ -160,6 +170,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason="all_records_filtered_by_quality",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(f"[{ticker}] 跳过: 质量过滤后无剩余记录")
                 continue
@@ -173,6 +185,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason=f"insufficient_option_points: puts={put_count}, calls={call_count}",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(
                     f"[{ticker}] 跳过: 数据点不足 (Put={put_count}, Call={call_count})"
@@ -190,6 +204,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason="delta_interpolation_returned_none",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(f"[{ticker}] 跳过: 插值返回 None (Put={iv_put_25d}, Call={iv_call_25d})")
                 continue
@@ -199,6 +215,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason="delta_interpolation_returned_nan_or_inf",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(
                     f"[{ticker}] 跳过: 插值返回 NaN/Inf (Put={iv_put_25d}, Call={iv_call_25d})"
@@ -213,6 +231,8 @@ def process_all_tickers(
                     ticker, as_of_date,
                     reason="skew_calculation_failed",
                     data_source=data_source,
+                    greeks_source=greeks_source,
+                    signal_quality=signal_quality,
                 )
                 logger.warning(f"[{ticker}] 跳过: Skew 计算失败")
                 continue
@@ -229,6 +249,8 @@ def process_all_tickers(
                 "put_is_extrapolated": interp_result["put_is_extrapolated"],
                 "call_is_extrapolated": interp_result["call_is_extrapolated"],
                 "data_source": data_source,
+                "greeks_source": greeks_source,
+                "signal_quality": signal_quality,
                 "error": None,
             }
 
@@ -244,6 +266,8 @@ def process_all_tickers(
                 ticker, as_of_date,
                 reason=f"exception: {type(e).__name__}",
                 data_source="unknown",
+                greeks_source="none",
+                signal_quality="unavailable",
             )
 
     # ── v1.2.1: 汇总跳过日志 ──
@@ -273,6 +297,52 @@ def _extract_data_source(snapshots: list[dict[str, Any]]) -> str:
         if greeks.get("delta") is not None:
             return "polygon"
     return "unknown"
+
+
+def _extract_greeks_source(
+    snapshots: list[dict[str, Any]],
+    data_source: str,
+) -> str:
+    """从快照列表中提取 Greeks 来源标记（v1.2.1）。"""
+    if not snapshots:
+        return "none"
+    # 优先使用快照中的显式标记
+    gs = snapshots[0].get("_greeks_source", "")
+    if gs:
+        return str(gs)
+    # Polygon 源默认为 vendor
+    if data_source == "polygon":
+        return "vendor"
+    return "none"
+
+
+def _extract_signal_quality(
+    snapshots: list[dict[str, Any]],
+    data_source: str,
+    greeks_source: str,
+) -> str:
+    """从快照中提取综合信号质量标记（v1.2.1）。
+
+    质量等级：
+        primary           — Polygon 原生数据
+        fallback_estimated — yfinance + BSM 推算 Delta
+        degraded          — 数据源降级但仍有部分有效字段
+        unavailable       — 数据不可用
+    """
+    if not snapshots:
+        return "unavailable"
+    # 优先使用快照中的显式标记
+    sq = snapshots[0].get("_signal_quality", "")
+    if sq:
+        return str(sq)
+    # 根据 data_source 推断
+    if data_source == "polygon":
+        return "primary"
+    if data_source == "yfinance":
+        if greeks_source == "bsm_estimated":
+            return "fallback_estimated"
+        return "degraded"
+    return "unavailable"
 
 
 def calculate_cross_asset_spreads(
