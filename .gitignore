@@ -1,0 +1,58 @@
+# =============================================================================
+# .gitignore - 程序化盘后流动性与尾部风险监控引擎
+# =============================================================================
+
+# 环境变量（含敏感 API 密钥）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 日志
+logs/
+*.log
+
+# 数据文件（本地化存储不应提交）
+data/raw/
+data/processed/
+*.parquet
+
+# Google 凭证（敏感内容）
+credentials/google_service_account.json
+credentials/*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ruff / pre-commit
+.ruff_cache/

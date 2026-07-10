@@ -1,0 +1,53 @@
+# =============================================================================
+# 监控标的池定义
+# =============================================================================
+
+# --- 核心指数 ETF 期权暗流扫描 ---
+# 每日盘后批量分析的标的列表
+target_tickers:
+  - symbol: "SPY"
+    name: "标普500 ETF"
+    description: "衡量全市场大盘基准"
+    category: "large_cap"
+  - symbol: "QQQ"
+    name: "纳斯达克100 ETF"
+    description: "衡量科技巨头与成长股风险"
+    category: "tech_growth"
+  - symbol: "IWM"
+    name: "罗素2000 ETF"
+    description: "衡量中小盘流动性与实体经济信用压力"
+    category: "small_cap"
+  - symbol: "DIA"
+    name: "道琼斯工业平均指数 ETF"
+    description: "衡量传统蓝筹股"
+    category: "blue_chip"
+
+# --- 跨标的 Skew 剪刀差配置 ---
+# 定义需要计算的跨标的 Skew 差值对
+cross_asset_pairs:
+  - pair: ["QQQ", "SPY"]
+    description: "科技股 vs 全市场：差值走阔预示科技巨头极端去杠杆压力"
+
+# --- 波动率期限结构 ---
+volatility_index_mapping:
+  SPY: "VIX"
+  QQQ: "VXN"
+
+# --- 期权筛选参数 ---
+options_filter:
+  target_dte: 30          # 目标距离到期日（天）
+  dte_tolerance: 5         # DTE 容差范围（±天）
+  min_volume: 1            # 最低成交量阈值
+  max_bid_ask_spread_pct: 0.5  # 最大 Bid/Ask 价差比例（50%）
+
+# --- Delta 插值参数 ---
+delta_interpolation:
+  target_delta_put: 0.25   # 目标 Put Delta（正值表示绝对值）
+  target_delta_call: 0.25  # 目标 Call Delta
+  interpolation_method: "cubic_spline"  # 插值方法: cubic_spline / linear
+
+# --- 风险预警阈值 ---
+risk_alert:
+  skew_zscore_window: 90   # Skew Z-Score 计算窗口（交易日）
+  skew_zscore_threshold: 2.0  # Z-Score 阈值（默认 +2σ）
+  macro_leverage_ratio_threshold: 6.0  # 杠杆占比绝对值阈值（%）
