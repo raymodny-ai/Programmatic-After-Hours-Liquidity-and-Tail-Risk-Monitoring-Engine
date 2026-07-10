@@ -42,6 +42,9 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
 # 加载 tickers.yaml
 _tickers_config = _load_yaml_config(CONFIG_DIR / "tickers.yaml")
 
+# ── v1.2.1: 加载风险阈值配置 ──
+_risk_thresholds_config = _load_yaml_config(CONFIG_DIR / "risk_thresholds.yaml")
+
 # ---------------------------------------------------------------------------
 # API 密钥
 # ---------------------------------------------------------------------------
@@ -121,6 +124,10 @@ _risk_cfg = _tickers_config.get("risk_alert", {})
 SKEW_ZSCORE_WINDOW: int = _risk_cfg.get("skew_zscore_window", 90)
 SKEW_ZSCORE_THRESHOLD: float = _risk_cfg.get("skew_zscore_threshold", 2.0)
 MACRO_LEVERAGE_RATIO_THRESHOLD: float = _risk_cfg.get("macro_leverage_ratio_threshold", 6.0)
+
+# ── v1.2.1: VXN 自动化告警阈值（从 risk_thresholds.yaml 加载）──
+_vxn_alert_cfg = _risk_thresholds_config.get("vxn_alert", {})
+VXN_ALERT_CONFIG: dict[str, Any] = _vxn_alert_cfg  # 完整配置，供 VXNThresholds 使用
 
 # ---------------------------------------------------------------------------
 # API 端点定义

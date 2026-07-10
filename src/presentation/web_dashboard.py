@@ -266,9 +266,11 @@ def _build_zscore_chart(df: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 
 SEVERITY_COLORS = {
+    "critical": "#f85149",
     "extreme": "#f85149",
     "high": "#f0883e",
     "elevated": "#d29922",
+    "watch": "#58a6ff",
     "normal": "#3fb950",
     "unknown": "#8b949e",
 }
@@ -611,6 +613,45 @@ async def api_volatility():
         return {"status": "error", "message": str(e)}
 
 
+# ── v1.2.1: VXN 告警状态 API ──
+
+
+@app.get("/api/vxn_alert")
+async def api_vxn_alert():
+    """返回 VXN 自动化告警引擎状态（v1.2.1）。
+
+    包含：severity, score, reasons, alert_state (冷却/升级/解除)
+    """
+    from config.settings import PROCESSED_DATA_DIR
+
+    # 波动率快照中的 vxn_alert 字段
+    vol_file = Path(PROCESSED_DATA_DIR) / "volatility_regime_snapshot.json"
+    vxn_data = {}
+    if vol_file.exists():
+        try:
+            import json as _json
+            snap = _json.loads(vol_file.read_text(encoding="utf-8"))
+            vxn_data = snap.get("vxn_alert", {})
+        except Exception:
+            pass
+
+    # 告警状态管理器持久化
+    state_file = Path(PROCESSED_DATA_DIR) / "vxn_alert_state.json"
+    alert_state = {}
+    if state_file.exists():
+        try:
+            import json as _json
+            alert_state = _json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "vxn_alert": vxn_data,
+        "alert_state": alert_state,
+    }
+
+
 # ---------------------------------------------------------------------------
 # v1.2: 宏观流动性图表
 # ---------------------------------------------------------------------------
@@ -698,6 +739,33 @@ def _build_volatility_cards() -> str:
                 <span>Spread: {'⚠' if qqq.get('components', {}).get('vxn_vix_relative') else '✓'}</span>
             </div>
             <div class="metric-status" style="color:{sev_color.get(sev, '#8b949e')}">{sev.upper()}</div>
+        </div>"""
+
+    # ── v1.2.1: VXN 自动化告警引擎卡片 ──
+    vxn_alert = data.get("vxn_alert", {})
+    if vxn_alert and vxn_alert.get("status") == "ok":
+        vxn_sev = vxn_alert.get("severity", "normal")
+        vxn_sev_color = {
+            "critical": "#f85149",
+            "high": "#f0883e",
+            "elevated": "#d29922",
+            "watch": "#58a6ff",
+            "normal": "#3fb950",
+        }
+        vxn_score = vxn_alert.get("score", 0)
+        vxn_reasons = vxn_alert.get("reasons", [])
+        reasons_html = "<br>".join(vxn_reasons[:4]) if vxn_reasons else "无触发"
+        cards += f"""
+        <div class="metric-card" style="border-color:#30363d; border-left: 3px solid {vxn_sev_color.get(vxn_sev, '#8b949e')}">
+            <div class="metric-ticker">VXN 告警引擎</div>
+            <div class="metric-value" style="font-size:22px">{vxn_sev.upper()}</div>
+            <div class="metric-label">积分: {vxn_score} | Z={vxn_alert.get('vxn_z_score', 'N/A')}</div>
+            <div class="metric-detail" style="font-size:10px; flex-direction:column; line-height:1.4">
+                {reasons_html}
+            </div>
+            <div class="metric-status" style="color:{vxn_sev_color.get(vxn_sev, '#8b949e')}">
+                {'🔔 告警中' if vxn_alert.get('is_alert') else '✓ 静默'}
+            </div>
         </div>"""
 
     if not cards:

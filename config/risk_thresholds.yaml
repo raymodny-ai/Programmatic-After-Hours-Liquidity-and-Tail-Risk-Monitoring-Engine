@@ -1,0 +1,52 @@
+# =============================================================================
+# VXN 自动化告警阈值配置 (v1.2.1)
+# =============================================================================
+# 核心设计理念：
+#   - 以自身滚动 Z-Score 和分位数为主规则，而非固定点位
+#   - 积分制 + 冷却机制，避免重复告警
+#   - 绝对点位仅作为辅助熔断器
+#   - 上线后需通过 3-5 年历史样本校准，不可永久固化数值
+
+vxn_alert:
+  # ── 历史窗口 ──
+  history_window: 252          # Z-Score / 分位数计算的历史窗口（交易日）
+  percentile_window: 252       # 分位数计算窗口
+  momentum_short_days: 5       # 短期动量窗口（捕捉快速恶化）
+  momentum_long_days: 20       # 长期动量窗口（参考趋势）
+
+  # ── Z-Score 分层阈值 ──
+  zscore:
+    watch: 1.0                 # 开始关注
+    elevated: 2.0              # 统计显著异常
+    high: 2.5                  # 需 QQQ Skew 二次确认
+    critical: 3.0              # 多维共振尾部风险
+
+  # ── 滚动分位数阈值 ──
+  percentile:
+    watch: 0.80                # 80% 分位以上
+    elevated: 0.95             # 95% 分位以上
+    critical: 0.99             # 99% 分位以上
+
+  # ── 短期动量阈值 ──
+  return_5d:
+    watch: 0.15                # 5 日涨幅 >= 15%
+    elevated: 0.25             # 5 日涨幅 >= 25%
+
+  # ── 绝对点位熔断器（辅助）──
+  absolute_level:
+    high: 35.0                 # VXN >= 35 → 至少 high
+    critical: 45.0             # VXN >= 45 → critical
+
+  # ── VXN-VIX 相对压力 ──
+  relative_vxn_vix:
+    zscore_threshold: 2.0      # VXN-VIX spread Z-Score 阈值
+
+  # ── QQQ Skew 共振 ──
+  qqq_skew:
+    zscore_threshold: 2.0      # QQQ Skew Z-Score 阈值
+
+  # ── 通知策略 ──
+  notification:
+    cooldown_hours: 24         # 同级别冷却时间（小时）
+    elevated_confirmation_days: 2  # elevated 以上需连续确认天数
+    resolved_after_normal_days: 3  # 连续正常天数后发送解除通知

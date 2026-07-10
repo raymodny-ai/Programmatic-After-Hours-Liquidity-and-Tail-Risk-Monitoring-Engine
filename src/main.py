@@ -35,6 +35,10 @@ from src.calculation.volatility_regime import (
     compute_vxn_vix_spread,
     build_qqq_tail_risk_confirmation,
 )
+from src.calculation.vxn_alert_engine import (
+    calculate_vxn_alert,
+    AlertStateManager,
+)
 from src.presentation import web_dashboard
 from src.presentation.logging_setup import setup_logging
 from src.presentation.terminal_alerts import print_full_report
@@ -140,6 +144,21 @@ async def run_full_pipeline() -> dict[str, Any]:
                 f"alert={vxn_vix_signal.get('is_alert')}"
             )
 
+        # ── v1.2.1: VXN 自动化告警引擎（积分制分层状态机）──
+        vxn_alert_result = None
+        vxn_notification_action = None
+        if isinstance(vxn_result, pd.DataFrame) and not vxn_result.empty:
+            vxn_alert_result = calculate_vxn_alert(
+                vxn_history=vxn_result,
+                vix_history=vix_result if isinstance(vix_result, pd.DataFrame) else None,
+                qqq_skew_z=None,  # 待 Phase 2 计算后补充
+            )
+            logger.info(
+                f"VXN 告警引擎: severity={vxn_alert_result.get('severity')}, "
+                f"score={vxn_alert_result.get('score')}, "
+                f"reasons={vxn_alert_result.get('reasons')}"
+            )
+
     except Exception as e:
         logger.warning(f"VIX / VXN 波动率状态分析失败（非致命）: {e}")
 
@@ -204,6 +223,49 @@ async def run_full_pipeline() -> dict[str, Any]:
             f"严重程度={qqq_tail_confirmation['severity'].upper()}"
         )
 
+    # ── v1.2.1: VXN 告警引擎 — 补充 QQQ Skew Z + 状态管理 ──
+    if vxn_alert_result and vxn_alert_result.get("status") == "ok":
+        # 提取 QQQ Skew Z-Score
+        qqq_skew_z: float | None = None
+        if qqq_skew_alert:
+            qqq_skew_z = qqq_skew_alert.get("z_score")
+
+        # 重新计算（带 QQQ Skew Z）
+        vxn_alert_result = calculate_vxn_alert(
+            vxn_history=vxn_result,
+            vix_history=vix_result if isinstance(vix_result, pd.DataFrame) else None,
+            qqq_skew_z=qqq_skew_z,
+        )
+
+        severity = vxn_alert_result.get("severity", "normal")
+        as_of = vxn_alert_result.get("as_of_date", "")
+
+        alert_mgr = AlertStateManager()
+        should_send, action = alert_mgr.should_notify(severity, as_of)
+
+        if should_send:
+            if action == "upgrade":
+                logger.warning(
+                    f"[VXN 告警升级] {severity.upper()} (前次: {alert_mgr.get_last_state().get('last_severity')}) | "
+                    f"score={vxn_alert_result.get('score')} | "
+                    f"reasons={vxn_alert_result.get('reasons')}"
+                )
+            elif action == "resolved":
+                logger.info(
+                    f"[VXN 告警解除] 连续 {alert_mgr.resolved_days} 日低于 watch，风险状态解除"
+                )
+            else:
+                logger.warning(
+                    f"[VXN 告警] {severity.upper()} | "
+                    f"score={vxn_alert_result.get('score')} | "
+                    f"reasons={vxn_alert_result.get('reasons')}"
+                )
+        else:
+            logger.info(
+                f"[VXN 告警静默] severity={severity}, action={action}, "
+                f"score={vxn_alert_result.get('score')}"
+            )
+
     # 保存主数据帧快照
     snapshot_df = aggregated["daily_snapshot_df"]
     writer.save_master_snapshot(snapshot_df)
@@ -214,6 +276,7 @@ async def run_full_pipeline() -> dict[str, Any]:
         vxn_regime=vxn_regime,
         vxn_vix_signal=vxn_vix_signal,
         qqq_tail_confirmation=qqq_tail_confirmation,
+        vxn_alert=vxn_alert_result,
     )
 
     # ─────────────────────────────────────────────────────────────
@@ -327,6 +390,7 @@ def _save_volatility_regime_snapshot(
     vxn_regime: Optional[dict] = None,
     vxn_vix_signal: Optional[dict] = None,
     qqq_tail_confirmation: Optional[dict] = None,
+    vxn_alert: Optional[dict] = None,
 ) -> None:
     """持久化 VIX/VXN 波动率状态快照为 JSON（v1.2.1）。
 
@@ -344,6 +408,8 @@ def _save_volatility_regime_snapshot(
         snapshot["vxn_vix_spread"] = vxn_vix_signal
     if qqq_tail_confirmation:
         snapshot["qqq_tail_confirmation"] = qqq_tail_confirmation
+    if vxn_alert:
+        snapshot["vxn_alert"] = vxn_alert
 
     if snapshot:
         snapshot["updated_at"] = datetime.now().isoformat()
