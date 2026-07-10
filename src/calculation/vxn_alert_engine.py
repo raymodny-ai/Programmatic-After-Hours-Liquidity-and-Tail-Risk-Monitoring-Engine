@@ -429,25 +429,30 @@ class AlertStateManager:
             "last_severity": "normal",
             "last_notified_at": None,
             "last_notified_date": None,
+            "last_reasons": [],
             "severity_history": [],
         }
 
     def _save(self, state: dict[str, Any]) -> None:
-        self.state_file.write_text(
+        tmp_path = self.state_file.with_suffix(".tmp")
+        tmp_path.write_text(
             _json.dumps(state, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
+        tmp_path.replace(self.state_file)
 
     def should_notify(
         self,
         severity: str,
         as_of_date: str,
+        reasons: list[str] | None = None,
     ) -> tuple[bool, str]:
         """判断当前应执行的动作。
 
         Args:
             severity: 当日判定等级
             as_of_date: 日期字符串 "YYYY-MM-DD"
+            reasons: 本次告警的触发原因列表（用于持久化复盘）
 
         Returns:
             (should_send: bool, action: str)
@@ -469,6 +474,7 @@ class AlertStateManager:
             state["last_severity"] = severity
             state["last_notified_at"] = now.isoformat()
             state["last_notified_date"] = as_of_date
+            state["last_reasons"] = reasons or []
             self._save(state)
             return True, "upgrade"
 
@@ -507,6 +513,7 @@ class AlertStateManager:
                 state["last_severity"] = severity
                 state["last_notified_at"] = now.isoformat()
                 state["last_notified_date"] = as_of_date
+                state["last_reasons"] = reasons or []
                 self._save(state)
                 return True, "resolved"
 
@@ -515,11 +522,13 @@ class AlertStateManager:
             state["last_severity"] = severity
             state["last_notified_at"] = now.isoformat()
             state["last_notified_date"] = as_of_date
+            state["last_reasons"] = reasons or []
             self._save(state)
             return True, "send"
 
         # silent
         state["last_severity"] = severity
+        state["last_reasons"] = reasons or []
         self._save(state)
         return False, "silent"
 

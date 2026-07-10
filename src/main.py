@@ -122,6 +122,12 @@ async def run_full_pipeline() -> dict[str, Any]:
             )
         else:
             logger.warning(f"VIX 拉取失败: {vix_result}")
+            vix_regime = {
+                "status": "unavailable",
+                "is_alert": False,
+                "reason": "vix_fetch_failed",
+                "as_of_date": date.today().isoformat(),
+            }
 
         if isinstance(vxn_result, pd.DataFrame):
             vxn_regime = compute_volatility_regime(
@@ -134,6 +140,12 @@ async def run_full_pipeline() -> dict[str, Any]:
             )
         else:
             logger.warning(f"VXN 拉取失败: {vxn_result}")
+            vxn_regime = {
+                "status": "unavailable",
+                "is_alert": False,
+                "reason": "vxn_fetch_failed",
+                "as_of_date": date.today().isoformat(),
+            }
 
         # VXN-VIX spread
         if isinstance(vix_result, pd.DataFrame) and isinstance(vxn_result, pd.DataFrame):
@@ -241,7 +253,10 @@ async def run_full_pipeline() -> dict[str, Any]:
         as_of = vxn_alert_result.get("as_of_date", "")
 
         alert_mgr = AlertStateManager()
-        should_send, action = alert_mgr.should_notify(severity, as_of)
+        should_send, action = alert_mgr.should_notify(
+            severity, as_of,
+            reasons=vxn_alert_result.get("reasons", []),
+        )
 
         if should_send:
             if action == "upgrade":
