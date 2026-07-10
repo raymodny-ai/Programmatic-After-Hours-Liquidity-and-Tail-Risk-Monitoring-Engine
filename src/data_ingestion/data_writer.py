@@ -5,9 +5,12 @@
 - 将原始 JSON 响应按标识符和日期归档存储
 - 支持 JSON 和 Parquet 两种格式
 - 自动创建以日期为子目录的归档结构
+- v1.2.1: 幂等去重 + source-priority + 原子写入
 """
 
 import json
+import os
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -16,6 +19,13 @@ import pandas as pd
 from loguru import logger
 
 from config.settings import RAW_DATA_DIR, PROCESSED_DATA_DIR
+
+# ── v1.2.1: 数据源优先级映射 ──
+SOURCE_PRIORITY: dict[str, int] = {
+    "polygon": 2,
+    "yfinance": 1,
+    "unknown": 0,
+}
 
 
 class DataWriter:
@@ -135,26 +145,83 @@ class DataWriter:
 
     def save_master_snapshot(
         self,
-        df: pd.DataFrame,
+        snapshot_df: pd.DataFrame,
         filename: str = "daily_risk_snapshot.parquet",
     ) -> Path:
-        """
-        保存主数据帧快照（每日风险汇总表）。
+        """保存主数据帧快照（v1.2.1: 幂等去重 + source-priority + 原子写入）。
 
-        如果文件已存在，则追加新数据。
+        策略:
+            - 新结果与历史结果合并
+            - (date, ticker) 主键去重，保留高优先级数据源
+            - 按 date, ticker 排序后原子写入临时文件再 replace
+            - 返回最终行数、去重数量，便于审计
         """
+        if snapshot_df.empty:
+            logger.warning("收到空 daily snapshot，跳过主快照写入")
+            return self.processed_dir / filename
+
+        required = {"date", "ticker"}
+        missing = required - set(snapshot_df.columns)
+        if missing:
+            raise ValueError(f"主快照缺少主键列: {sorted(missing)}")
+
         file_path = self.processed_dir / filename
+        incoming = snapshot_df.copy()
+        incoming["date"] = pd.to_datetime(incoming["date"]).dt.normalize()
+        incoming["ticker"] = incoming["ticker"].astype(str).str.upper()
 
         if file_path.exists():
-            existing = pd.read_parquet(file_path)
-            # 按 date + ticker 去重，新数据覆盖旧数据
-            combined = pd.concat([existing, df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=["date", "ticker"], keep="last")
-            combined.to_parquet(file_path, index=False)
+            historical = pd.read_parquet(file_path)
+            historical["date"] = pd.to_datetime(historical["date"]).dt.normalize()
+            historical["ticker"] = historical["ticker"].astype(str).str.upper()
+            combined = pd.concat([historical, incoming], ignore_index=True)
         else:
-            df.to_parquet(file_path, index=False)
+            combined = incoming
 
-        logger.info(f"主数据帧已更新: {file_path} ({len(df)} 行新增)")
+        before = len(combined)
+
+        # ── v1.2.1: source-priority 去重 ──
+        if "data_source" in combined.columns:
+            combined["_source_priority"] = (
+                combined.get("data_source", "unknown")
+                .fillna("unknown")
+                .map(SOURCE_PRIORITY)
+                .fillna(0)
+            )
+            combined = (
+                combined
+                .sort_values(["date", "ticker", "_source_priority"])
+                .drop_duplicates(subset=["date", "ticker"], keep="last")
+                .drop(columns=["_source_priority"], errors="ignore")
+            )
+        else:
+            combined = (
+                combined
+                .sort_values(["date", "ticker"])
+                .drop_duplicates(subset=["date", "ticker"], keep="last")
+            )
+
+        combined = combined.reset_index(drop=True)
+        removed = before - len(combined)
+
+        # 原子写入：先写临时文件，再 os.replace
+        temp_path = None
+        try:
+            temp_fd, temp_path_str = tempfile.mkstemp(
+                suffix=".parquet", dir=str(self.processed_dir),
+            )
+            os.close(temp_fd)
+            temp_path = Path(temp_path_str)
+            combined.to_parquet(temp_path, index=False)
+            os.replace(temp_path, file_path)
+        finally:
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+
+        logger.info(
+            f"主快照已写入: {file_path}; "
+            f"rows={len(combined)}; deduplicated={removed}"
+        )
         return file_path
 
     def load_master_snapshot(

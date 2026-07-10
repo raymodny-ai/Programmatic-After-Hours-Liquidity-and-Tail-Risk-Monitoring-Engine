@@ -102,17 +102,6 @@ class DeltaIVInterpolator:
                 )
 
             result = float(interpolator(target_delta))
-
-            # 边界约束：插值结果不应超出数据范围太多
-            if np.isnan(result):
-                # 如果目标在数据范围外且无法外推，尝试线性外推
-                if target_delta < x[0] or target_delta > x[-1]:
-                    logger.debug(
-                        f"目标 Delta {target_delta:.3f} 超出数据范围 "
-                        f"[{x[0]:.3f}, {x[-1]:.3f}]，使用最近邻值"
-                    )
-                    result = float(np.interp(target_delta, x, y))
-
             return result
 
         except Exception as e:
@@ -149,6 +138,12 @@ class DeltaIVInterpolator:
         """
         if df.empty:
             logger.warning("DataFrame 为空，无法插值")
+            return np.nan, np.nan
+
+        required_cols = {"contract_type", "delta", "implied_volatility"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            logger.warning(f"DataFrame 缺少必要列: {sorted(missing)}，无法插值")
             return np.nan, np.nan
 
         # ------------------------------------------------------------------

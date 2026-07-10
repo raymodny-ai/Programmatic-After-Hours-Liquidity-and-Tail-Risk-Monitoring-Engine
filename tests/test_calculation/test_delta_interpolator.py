@@ -112,9 +112,9 @@ class TestDeltaIVInterpolator:
         assert np.isnan(iv_put)
         assert np.isnan(iv_call)
 
-    def test_single_data_point(self):
-        """单数据点不足以插值，应返回 NaN。"""
-        interp = DeltaIVInterpolator()
+    def test_single_data_point_returns_nan(self):
+        """每个期权方向仅一个点时无法插值，必须返回 NaN。"""
+        interp = DeltaIVInterpolator(method="pchip")
         df = pd.DataFrame({
             "contract_type": ["put", "call"],
             "delta": [-0.25, 0.25],
@@ -122,10 +122,40 @@ class TestDeltaIVInterpolator:
         })
 
         iv_put, iv_call = interp.interpolate(df)
-        # Put 只有 1 个点，无法插值
-        assert np.isnan(iv_put) or not np.isnan(iv_put)
-        # Call 也只有 1 个点
-        assert np.isnan(iv_call) or not np.isnan(iv_call)
+
+        assert np.isnan(iv_put), f"单 Put 数据点应返回 NaN，实际={iv_put}"
+        assert np.isnan(iv_call), f"单 Call 数据点应返回 NaN，实际={iv_call}"
+
+    def test_target_delta_outside_observed_range_returns_nan(self):
+        """目标 Delta 在样本区间外时，禁止外推（PCHIP extrapolate=False）。"""
+        interp = DeltaIVInterpolator(method="pchip")
+        # 构造 Delta 范围远离 0.25 的期权链
+        df = pd.DataFrame({
+            "contract_type": ["put", "put", "call", "call"],
+            "delta": [-0.05, -0.10, 0.05, 0.10],
+            "implied_volatility": [0.20, 0.21, 0.18, 0.19],
+        })
+
+        iv_put, iv_call = interp.interpolate(df)
+
+        # 目标 0.25 不在 [0.05, 0.10] 范围内，extrapolate=False 应返回 NaN
+        assert np.isnan(iv_put), f"Put 目标 Delta 超出范围应返回 NaN，实际={iv_put}"
+        assert np.isnan(iv_call), f"Call 目标 Delta 超出范围应返回 NaN，实际={iv_call}"
+
+    def test_duplicate_delta_values_are_deduplicated(self):
+        """重复 Delta 值去重后不应导致 PCHIP 崩溃。"""
+        interp = DeltaIVInterpolator(method="pchip")
+        df = pd.DataFrame({
+            "contract_type": ["put", "put", "put", "call", "call", "call"],
+            "delta": [-0.20, -0.20, -0.30, 0.20, 0.20, 0.30],
+            "implied_volatility": [0.22, 0.23, 0.20, 0.19, 0.20, 0.22],
+        })
+
+        iv_put, iv_call = interp.interpolate(df)
+
+        # 去重后应有 2 个唯一 Put 和 2 个唯一 Call 点，应能插值
+        assert not np.isnan(iv_put), f"去重后 Put 应可插值，实际={iv_put}"
+        assert not np.isnan(iv_call), f"去重后 Call 应可插值，实际={iv_call}"
 
     def test_interpolate_with_confidence(self, sample_option_chain):
         """置信度报告应包含所有元数据字段。"""

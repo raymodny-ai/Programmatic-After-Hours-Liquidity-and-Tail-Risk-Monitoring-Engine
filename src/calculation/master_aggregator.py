@@ -61,6 +61,11 @@ def build_daily_risk_snapshot(
     # 构建记录
     records = []
     for ticker, result in skew_results.items():
+        # ── v1.2.1: 跳过 status="skipped" 的记录 ──
+        if result.get("status") == "skipped":
+            logger.info(f"[{ticker}] 已跳过，不纳入主快照: {result.get('skip_reason')}")
+            continue
+
         alert_info = alert_map.get(ticker, {})
 
         record = {
@@ -75,6 +80,7 @@ def build_daily_risk_snapshot(
             "alert_direction": alert_info.get("alert_direction"),
             "put_data_points": result.get("put_data_points", 0),
             "call_data_points": result.get("call_data_points", 0),
+            "data_source": result.get("data_source", "unknown"),  # v1.2.1
             "error": result.get("error"),
         }
         records.append(record)
@@ -120,6 +126,7 @@ def aggregate_results(
     cross_asset_results: Optional[list[dict[str, Any]]] = None,
     term_structure_status: Optional[dict[str, Any]] = None,
     macro_leverage_result: Optional[dict[str, Any]] = None,
+    volatility_regime: Optional[dict[str, Any]] = None,  # v1.2.1
     as_of_date: Optional[date] = None,
 ) -> dict[str, Any]:
     """
@@ -170,6 +177,7 @@ def aggregate_results(
         "alerts": alerts,
         "term_structure": term_structure_status,
         "macro_leverage": macro_leverage_result,
+        "volatility_regime": volatility_regime,  # v1.2.1
         "daily_snapshot_df": snapshot_df,
     }
 

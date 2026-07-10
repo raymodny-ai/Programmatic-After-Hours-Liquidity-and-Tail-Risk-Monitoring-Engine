@@ -116,7 +116,7 @@ class TestDataWriterIntegration:
             loaded = writer.load_master_snapshot()
             assert len(loaded) == 5
             assert list(loaded["ticker"]) == ["SPY"] * 5
-            assert loaded["alert_flag"].iloc[-1] is True
+            assert loaded["alert_flag"].iloc[-1] == True  # numpy bool → 用 == 比较
 
     def test_save_master_snapshot_dedup(self):
         """save_master_snapshot 应自动去重。"""

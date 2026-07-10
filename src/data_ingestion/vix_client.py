@@ -48,44 +48,40 @@ class VIXClient:
         self.futures_csv_url = futures_csv_url or CBOE_VIX_FUTURES_URL
 
     async def fetch_vix_history(self) -> pd.DataFrame:
-        """
-        从 Cboe 公开 CSV 获取 VIX 期货历史数据。
+        """从 Cboe 公开 CSV 获取 VIX 指数历史数据（v1.2.1: 标准化格式）。
 
         Cboe CSV 格式说明:
-            - 包含多列: Date, F1 (近月结算价), F2 (次月结算价), ... F9
-            - F1 是最近到期的 VIX 期货, F2 是次近月, 依此类推
+            - 包含多列: Date, VIX Open, VIX High, VIX Low, VIX Close
+            - VIX 指数本身（非期货）
 
         Returns:
-            DataFrame，列: [date, f1_price, f2_price, ...]
+            DataFrame，列: [date, close]（标准化格式）
         """
-        logger.info(f"从 Cboe 拉取 VIX 期货历史数据: {self.futures_csv_url}")
+        logger.info(f"从 Cboe 拉取 VIX 指数历史数据: {self.futures_csv_url}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(self.futures_csv_url)
             response.raise_for_status()
 
-            # Cboe CSV 可能需要跳过一些标题行
             from io import StringIO
 
             lines = response.text.splitlines()
-            # 查找表头行（通常以 "Date" 开头）
             header_idx = 0
             for i, line in enumerate(lines):
-                if line.strip().startswith("Date"):
+                if line.strip().lower().startswith("date"):
                     header_idx = i
                     break
 
             csv_content = "\n".join(lines[header_idx:])
             df = pd.read_csv(StringIO(csv_content))
 
-            # 标准化列名
-            df.columns = [c.strip().lower() for c in df.columns]
-            date_col = df.columns[0]
-            df = df.rename(columns={date_col: "date"})
-            df["date"] = pd.to_datetime(df["date"])
+            # ── v1.2.1: 统一标准化 ──
+            df = self._normalize_index_history(df)
 
-            logger.info(f"成功获取 VIX 期货数据: {len(df)} 条记录, 日期范围 "
-                        f"{df['date'].min().date()} -> {df['date'].max().date()}")
+            logger.info(
+                f"成功获取 VIX 指数数据: {len(df)} 条记录, "
+                f"日期范围 {df['date'].min().date()} -> {df['date'].max().date()}"
+            )
             return df
 
     def get_term_structure(
@@ -161,16 +157,15 @@ class VIXClient:
     # ── v1.2: VXN 独立接入 ──
 
     async def fetch_vxn_history(self) -> pd.DataFrame:
-        """
-        从 Cboe 公开 CSV 获取 VXN（纳斯达克波动率指数）期货历史数据。
+        """从 Cboe 公开 CSV 获取 VXN 指数历史数据（v1.2.1: 标准化格式）。
 
         VXN 是纳斯达克100指数的波动率指数，等价于 QQQ 的 "VIX"。
-        对 QQQ 的期限结构分析应使用 VXN 而非 VIX。
+        对 QQQ 的波动率压力分析应使用 VXN 而非 VIX。
 
         Returns:
-            DataFrame，结构同 fetch_vix_history()
+            DataFrame，结构同 fetch_vix_history()：[date, close]
         """
-        logger.info(f"[VXN] 从 Cboe 拉取 VXN 期货历史数据: {self.VXN_FUTURES_URL}")
+        logger.info(f"[VXN] 从 Cboe 拉取 VXN 指数历史数据: {self.VXN_FUTURES_URL}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(self.VXN_FUTURES_URL)
@@ -181,23 +176,53 @@ class VIXClient:
             lines = response.text.splitlines()
             header_idx = 0
             for i, line in enumerate(lines):
-                if line.strip().startswith("Date"):
+                if line.strip().lower().startswith("date"):
                     header_idx = i
                     break
 
             csv_content = "\n".join(lines[header_idx:])
             df = pd.read_csv(StringIO(csv_content))
 
-            df.columns = [c.strip().lower() for c in df.columns]
-            date_col = df.columns[0]
-            df = df.rename(columns={date_col: "date"})
-            df["date"] = pd.to_datetime(df["date"])
+            # ── v1.2.1: 统一标准化 ──
+            df = self._normalize_index_history(df)
 
             logger.info(
-                f"[VXN] 成功获取 VXN 期货数据: {len(df)} 条记录, "
+                f"[VXN] 成功获取 VXN 指数数据: {len(df)} 条记录, "
                 f"日期范围 {df['date'].min().date()} -> {df['date'].max().date()}"
             )
             return df
+
+    @staticmethod
+    def _normalize_index_history(df: pd.DataFrame) -> pd.DataFrame:
+        """将 Cboe 波动率指数 CSV 标准化为统一格式（v1.2.1）。
+
+        防止 Cboe 文件列名变动时静默失效。
+
+        Returns:
+            DataFrame，列: [date, close]
+        """
+        df = df.copy()
+        df.columns = [str(c).strip().lower() for c in df.columns]
+
+        date_col = next(
+            (c for c in df.columns if c in {"date", "trade_date"}),
+            df.columns[0],
+        )
+        close_col = next(
+            (c for c in df.columns if c in {"close", "close/last", "last", "settle", "vix close", "vxn close"}),
+            None,
+        )
+
+        if close_col is None:
+            raise ValueError(
+                f"无法识别波动率指数收盘价列，列为: {df.columns.tolist()}"
+            )
+
+        df = df.rename(columns={date_col: "date", close_col: "close"})
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+
+        return df.dropna(subset=["date", "close"]).sort_values("date")
 
     def get_vxn_term_structure(
         self,

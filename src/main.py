@@ -30,6 +30,11 @@ from src.calculation.master_aggregator import aggregate_results
 from src.calculation.risk_signals import format_alert_summary
 from src.calculation.term_structure import analyze_term_structure_history, generate_term_structure_alert
 from src.calculation.cross_asset_signals import check_all_cross_asset_alerts
+from src.calculation.volatility_regime import (
+    compute_volatility_regime,
+    compute_vxn_vix_spread,
+    build_qqq_tail_risk_confirmation,
+)
 from src.presentation import web_dashboard
 from src.presentation.logging_setup import setup_logging
 from src.presentation.terminal_alerts import print_full_report
@@ -76,24 +81,67 @@ async def run_full_pipeline() -> dict[str, Any]:
         logger.error("所有标的数据抓取失败，终止流水线")
         return {"error": "所有标的数据抓取失败"}
 
-    # ── 新增: VIX 期限结构数据抓取（修复缺口一）──
+    # ── v1.2.1: VIX + VXN 并行拉取与波动率状态分析 ──
     term_structure_status = None
+    vix_regime = None
+    vxn_regime = None
+    vxn_vix_signal = None
+    qqq_tail_confirmation = None
+
     try:
         vix_client = VIXClient()
-        vix_df = await vix_client.fetch_vix_history()
-        ts_raw = vix_client.get_term_structure(vix_df)
-        term_structure_status = ts_raw
-        ts_alert = generate_term_structure_alert(ts_raw)
-        logger.info(
-            f"VIX 期限结构: {ts_raw['status']} | "
-            f"近月={ts_raw['front_month']:.2f}, 次月={ts_raw['second_month']:.2f} | "
-            f"升贴水={ts_raw['contango_pct']:.1f}% | "
-            f"{ts_alert['alert_message']}"
+
+        # 并行拉取 VIX 和 VXN
+        vix_result, vxn_result = await asyncio.gather(
+            vix_client.fetch_vix_history(),
+            vix_client.fetch_vxn_history(),
+            return_exceptions=True,
         )
-        if ts_alert["alert_level"] == "critical":
-            logger.warning(f"[VIX 倒挂预警] {ts_alert['alert_message']}")
+
+        if isinstance(vix_result, pd.DataFrame):
+            vix_regime = compute_volatility_regime(
+                vix_result, index_name="VIX",
+            )
+            logger.info(
+                f"VIX 波动率状态: level={vix_regime.get('current_level')}, "
+                f"z_score={vix_regime.get('z_score')}, "
+                f"alert={vix_regime.get('is_alert')}"
+            )
+            # 兼容旧版 term_structure 接口
+            ts_raw = vix_client.get_term_structure(vix_result)
+            term_structure_status = ts_raw
+            ts_alert = generate_term_structure_alert(ts_raw)
+            logger.info(
+                f"VIX 期限结构: 近月={ts_raw.get('front_month', 'N/A')}, "
+                f"次月={ts_raw.get('second_month', 'N/A')} | "
+                f"{ts_alert.get('alert_message', 'N/A')}"
+            )
+        else:
+            logger.warning(f"VIX 拉取失败: {vix_result}")
+
+        if isinstance(vxn_result, pd.DataFrame):
+            vxn_regime = compute_volatility_regime(
+                vxn_result, index_name="VXN",
+            )
+            logger.info(
+                f"VXN 波动率状态: level={vxn_regime.get('current_level')}, "
+                f"z_score={vxn_regime.get('z_score')}, "
+                f"alert={vxn_regime.get('is_alert')}"
+            )
+        else:
+            logger.warning(f"VXN 拉取失败: {vxn_result}")
+
+        # VXN-VIX spread
+        if isinstance(vix_result, pd.DataFrame) and isinstance(vxn_result, pd.DataFrame):
+            vxn_vix_signal = compute_vxn_vix_spread(vxn_result, vix_result)
+            logger.info(
+                f"VXN-VIX spread: {vxn_vix_signal.get('spread')}, "
+                f"z_score={vxn_vix_signal.get('z_score')}, "
+                f"alert={vxn_vix_signal.get('is_alert')}"
+            )
+
     except Exception as e:
-        logger.warning(f"VIX 期限结构数据获取失败（非致命）: {e}")
+        logger.warning(f"VIX / VXN 波动率状态分析失败（非致命）: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # Phase 2: 计算引擎
@@ -133,12 +181,40 @@ async def run_full_pipeline() -> dict[str, Any]:
         historical_df=historical_df,
         cross_asset_results=cross_asset_results,
         term_structure_status=term_structure_status,
+        volatility_regime={
+            "vix": vix_regime,
+            "vxn": vxn_regime,
+            "vxn_vix_spread": vxn_vix_signal,
+        },
         as_of_date=date.today(),
     )
+
+    # ── v1.2.1: QQQ 三因子联合确认预警 ──
+    qqq_skew_alert = next(
+        (a for a in aggregated["alerts"] if a["ticker"] == "QQQ"), None
+    )
+    qqq_tail_confirmation = build_qqq_tail_risk_confirmation(
+        qqq_skew_alert=qqq_skew_alert,
+        vxn_regime=vxn_regime,
+        vxn_vix_signal=vxn_vix_signal,
+    )
+    if qqq_tail_confirmation["is_alert"]:
+        logger.warning(
+            f"[QQQ 尾部风险确认] 三因子确认分数={qqq_tail_confirmation['confirmation_score']}/3, "
+            f"严重程度={qqq_tail_confirmation['severity'].upper()}"
+        )
 
     # 保存主数据帧快照
     snapshot_df = aggregated["daily_snapshot_df"]
     writer.save_master_snapshot(snapshot_df)
+
+    # ── v1.2.1: 保存波动率状态快照供 Web 看板读取 ──
+    _save_volatility_regime_snapshot(
+        vix_regime=vix_regime,
+        vxn_regime=vxn_regime,
+        vxn_vix_signal=vxn_vix_signal,
+        qqq_tail_confirmation=qqq_tail_confirmation,
+    )
 
     # ─────────────────────────────────────────────────────────────
     # Phase 4: 展示层
@@ -244,6 +320,40 @@ async def run_monthly_macro_pipeline(
     except Exception as e:
         logger.error(f"宏观流动性分析失败: {e}")
         return {"error": str(e)}
+
+
+def _save_volatility_regime_snapshot(
+    vix_regime: Optional[dict] = None,
+    vxn_regime: Optional[dict] = None,
+    vxn_vix_signal: Optional[dict] = None,
+    qqq_tail_confirmation: Optional[dict] = None,
+) -> None:
+    """持久化 VIX/VXN 波动率状态快照为 JSON（v1.2.1）。
+
+    Web 看板从此文件读取最新的波动率状态数据。
+    """
+    import json as _json
+    from config.settings import PROCESSED_DATA_DIR
+
+    snapshot = {}
+    if vix_regime:
+        snapshot["vix"] = vix_regime
+    if vxn_regime:
+        snapshot["vxn"] = vxn_regime
+    if vxn_vix_signal:
+        snapshot["vxn_vix_spread"] = vxn_vix_signal
+    if qqq_tail_confirmation:
+        snapshot["qqq_tail_confirmation"] = qqq_tail_confirmation
+
+    if snapshot:
+        snapshot["updated_at"] = datetime.now().isoformat()
+        file_path = PROCESSED_DATA_DIR / "volatility_regime_snapshot.json"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(
+            _json.dumps(snapshot, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info(f"波动率状态快照已保存: {file_path}")
 
 
 def parse_args():

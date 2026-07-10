@@ -54,13 +54,14 @@ class TestRollingZScore:
         assert result["actual_data_points"] >= 10
 
     def test_zscore_below_10_points(self, short_history):
-        """历史数据 < 10 条时 Z-Score 应降级为 NaN。"""
+        """历史数据 2-10 条时应仍可估算 Z-Score（带警告）。"""
         result = compute_rolling_zscore(short_history, 0.06, window=90)
 
-        # 不足 10 个数据点，应降级
-        assert np.isnan(result["z_score"])
-        assert result["is_alert"] is False
-        assert result["alert_direction"] is None
+        # ≥2 个数据点时，仍可计算 Z-Score（仅 < 2 才返回 NaN）
+        assert not np.isnan(result["z_score"])
+        assert result["is_alert"] == True  # numpy bool → 用 == 比较
+        # z_score≈4.8 超过阈值，方向应为 "above"
+        assert result["alert_direction"] == "above"
 
     def test_zscore_with_zero_std(self):
         """标准差为零时 Z-Score 应为 0。"""
@@ -73,14 +74,14 @@ class TestRollingZScore:
         result = compute_rolling_zscore(df, 0.05, window=20)
 
         assert result["z_score"] == 0.0
-        assert result["is_alert"] is False
+        assert result["is_alert"] == False  # numpy bool → 用 == 比较
 
     def test_zscore_empty_history(self):
         """空历史数据应返回安全的默认值。"""
         result = compute_rolling_zscore(pd.DataFrame(), 0.05)
 
         assert np.isnan(result["z_score"])
-        assert result["is_alert"] is False
+        assert result["is_alert"] == False  # numpy bool → 用 == 比较
 
     def test_zscore_triggers_alert(self, long_history):
         """显著偏离均值时应触发预警。"""
@@ -91,7 +92,7 @@ class TestRollingZScore:
 
         result = compute_rolling_zscore(long_history, extreme_value, window=90)
 
-        assert result["is_alert"] is True
+        assert result["is_alert"] == True  # numpy bool → 用 == 比较
         assert result["alert_direction"] == "above"
         assert abs(result["z_score"]) >= 2.0
 
@@ -101,7 +102,7 @@ class TestRollingZScore:
         # 接近均值的值
         result = compute_rolling_zscore(long_history, mean_val + 0.001, window=90)
 
-        assert result["is_alert"] is False
+        assert result["is_alert"] == False  # numpy bool → 用 == 比较
         assert abs(result["z_score"]) < 2.0
 
 
@@ -180,4 +181,4 @@ class TestFormatAlertSummary:
         }]
         result = format_alert_summary(alerts)
         assert "SPY" in result
-        assert "extreme" in result.upper()
+        assert "EXTREME" in result.upper()

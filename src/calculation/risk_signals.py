@@ -30,27 +30,19 @@ def compute_rolling_zscore(
     value_column: str = "skew_spread",
     ticker_column: str = "ticker",
 ) -> dict[str, Any]:
-    """
-    计算 Skew 的滚动 Z-Score。
-
-    Args:
-        historical_df: 历史数据 DataFrame，必须包含 value_column 列
-        current_value: 当前观测值
-        window: 滚动窗口大小（交易日数）
-        value_column: 数值列名
-        ticker_column: 标的列名（如按标的分组计算）
-
-    Returns:
-        {
-            "z_score": float,
-            "rolling_mean": float,
-            "rolling_std": float,
-            "current_value": float,
-            "window_size": int,
-            "is_alert": bool,
-            "alert_direction": str or None,  # "above" | "below"
+    """计算 Skew 的滚动 Z-Score（v1.2.1: NaN current_value 防线）。"""
+    # ── v1.2.1: NaN current_value 防线 ──
+    if current_value is None or not np.isfinite(current_value):
+        return {
+            "z_score": np.nan,
+            "rolling_mean": np.nan,
+            "rolling_std": np.nan,
+            "current_value": current_value,
+            "window_size": window,
+            "is_alert": False,
+            "alert_direction": None,
+            "status": "invalid_current_value",
         }
-    """
     if historical_df.empty or value_column not in historical_df.columns:
         logger.warning("历史数据为空或无有效列，无法计算 Z-Score")
         return {
@@ -82,7 +74,7 @@ def compute_rolling_zscore(
     rolling_mean = float(recent.mean())
     rolling_std = float(recent.std(ddof=1))
 
-    if rolling_std == 0 or np.isnan(rolling_std):
+    if rolling_std < 1e-10 or np.isnan(rolling_std):
         z_score = 0.0
     else:
         z_score = (current_value - rolling_mean) / rolling_std
@@ -124,6 +116,10 @@ def check_all_ticker_alerts(
         预警列表，按严重程度降序排列
     """
     alerts = []
+
+    if historical_df.empty or "ticker" not in historical_df.columns:
+        logger.warning("历史数据无 ticker 列或为空，跳过预警检查")
+        return alerts
 
     for ticker, skew_value in current_skews.items():
         if skew_value is None:

@@ -44,7 +44,7 @@ from src.data_ingestion.data_writer import DataWriter
 app = FastAPI(
     title="尾部风险监控看板",
     description="程序化盘后流动性与尾部风险监控引擎 - Web Dashboard",
-    version="1.1.0",
+    version="1.2.1",
 )
 
 # 允许跨域访问（方便局域网内其他设备查看）
@@ -310,7 +310,7 @@ def _build_alert_table(df: pd.DataFrame) -> str:
 
 
 def _build_summary_cards(df: pd.DataFrame) -> str:
-    """生成最新一日各标的摘要卡片。"""
+    """生成最新一日各标的摘要卡片（v1.2.1: 含 data_source 质量标记）。"""
     latest_date = df["date"].max()
     latest = df[df["date"] == latest_date]
     non_cross = latest[~latest["ticker"].astype(str).str.startswith("CROSS:")]
@@ -333,9 +333,23 @@ def _build_summary_cards(df: pd.DataFrame) -> str:
         iv_put_str = f"{iv_put:.4f}" if iv_put is not None else "-"
         iv_call_str = f"{iv_call:.4f}" if iv_call is not None else "-"
 
+        # ── v1.2.1: data_source 质量标记 ──
+        data_source = row.get("data_source", "polygon")
+        source_badge = ""
+        if data_source == "yfinance":
+            source_badge = (
+                '<span style="background:#d29922;color:#0d1117;font-size:10px;'
+                'padding:1px 6px;border-radius:8px;margin-left:6px">EST</span>'
+            )
+        elif data_source == "polygon":
+            source_badge = (
+                '<span style="background:#3fb950;color:#0d1117;font-size:10px;'
+                'padding:1px 6px;border-radius:8px;margin-left:6px">PRIMARY</span>'
+            )
+
         cards += f"""
         <div class="metric-card" style="border-color:{border_color}">
-            <div class="metric-ticker">{row['ticker']}</div>
+            <div class="metric-ticker">{row['ticker']}{source_badge}</div>
             <div class="metric-value">{skew_str}</div>
             <div class="metric-label">Skew Spread</div>
             <div class="metric-detail">
@@ -406,6 +420,7 @@ async def dashboard(ticker_filter: Optional[str] = Query(None, alias="ticker")):
     cross_chart = _build_cross_asset_chart(df)
     zscore_chart = _build_zscore_chart(df)
     macro_chart = _build_macro_chart()
+    volatility_cards = _build_volatility_cards()  # v1.2.1
     alert_table = _build_alert_table(df)
     summary_cards = _build_summary_cards(df)
 
@@ -422,6 +437,7 @@ async def dashboard(ticker_filter: Optional[str] = Query(None, alias="ticker")):
         zscore_chart=zscore_chart,
         cross_chart=cross_chart,
         macro_chart=macro_chart,
+        volatility_cards=volatility_cards,
     )
     return HTMLResponse(content=html)
 
@@ -569,9 +585,135 @@ async def api_macro():
         return {"status": "error", "message": str(e)}
 
 
+# ── v1.2.1: VIX/VXN 波动率状态 API ──
+
+
+@app.get("/api/volatility")
+async def api_volatility():
+    """返回 VIX/VXN 波动率状态数据（v1.2.1）。
+
+    数据来源：run_full_pipeline 持久化的 volatility_regime_snapshot.json。
+    """
+    from config.settings import PROCESSED_DATA_DIR
+
+    vol_file = Path(PROCESSED_DATA_DIR) / "volatility_regime_snapshot.json"
+    if not vol_file.exists():
+        return {
+            "status": "empty",
+            "message": "暂无波动率状态数据，请先运行流水线",
+        }
+
+    try:
+        import json
+        data = json.loads(vol_file.read_text(encoding="utf-8"))
+        return {"status": "ok", "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # v1.2: 宏观流动性图表
 # ---------------------------------------------------------------------------
+
+
+def _build_volatility_cards() -> str:
+    """构建 VIX/VXN 波动率状态卡片（v1.2.1）。"""
+    from config.settings import PROCESSED_DATA_DIR
+    import json
+
+    vol_file = Path(PROCESSED_DATA_DIR) / "volatility_regime_snapshot.json"
+    if not vol_file.exists():
+        return '<p style="color:#8b949e; padding:20px; text-align:center">暂无波动率状态数据。运行流水线后刷新。</p>'
+
+    try:
+        data = json.loads(vol_file.read_text(encoding="utf-8"))
+    except Exception:
+        return '<p style="color:#f85149; padding:20px">波动率数据加载失败</p>'
+
+    cards = ""
+
+    # VIX 卡片
+    vix = data.get("vix", {})
+    if vix and vix.get("status") == "ok":
+        alert_color = "#f85149" if vix.get("is_alert") else "#3fb950"
+        cards += f"""
+        <div class="metric-card" style="border-color:#30363d; border-left: 3px solid #1f77b4">
+            <div class="metric-ticker">VIX</div>
+            <div class="metric-value">{vix.get('current_level', 'N/A')}</div>
+            <div class="metric-label">当前水平</div>
+            <div class="metric-detail">
+                <span>Z: {vix.get('z_score', 'N/A')}</span>
+                <span>20d: {_fmt_pct(vix.get('change_20d'))}</span>
+            </div>
+            <div class="metric-status" style="color:{alert_color}">{vix.get('alert_level', 'normal').upper()}</div>
+        </div>"""
+
+    # VXN 卡片
+    vxn = data.get("vxn", {})
+    if vxn and vxn.get("status") == "ok":
+        alert_color = "#f85149" if vxn.get("is_alert") else "#3fb950"
+        cards += f"""
+        <div class="metric-card" style="border-color:#30363d; border-left: 3px solid #ff7f0e">
+            <div class="metric-ticker">VXN (Nasdaq)</div>
+            <div class="metric-value">{vxn.get('current_level', 'N/A')}</div>
+            <div class="metric-label">当前水平</div>
+            <div class="metric-detail">
+                <span>Z: {vxn.get('z_score', 'N/A')}</span>
+                <span>20d: {_fmt_pct(vxn.get('change_20d'))}</span>
+            </div>
+            <div class="metric-status" style="color:{alert_color}">{vxn.get('alert_level', 'normal').upper()}</div>
+        </div>"""
+
+    # VXN-VIX Spread 卡片
+    spread = data.get("vxn_vix_spread", {})
+    if spread and spread.get("status") == "ok":
+        alert_color = "#f85149" if spread.get("is_alert") else "#3fb950"
+        cards += f"""
+        <div class="metric-card" style="border-color:#30363d; border-left: 3px solid #bc8cff">
+            <div class="metric-ticker">VXN-VIX Spread</div>
+            <div class="metric-value">{spread.get('spread', 'N/A')}</div>
+            <div class="metric-label">相对压力</div>
+            <div class="metric-detail">
+                <span>Z: {spread.get('z_score', 'N/A')}</span>
+            </div>
+            <div class="metric-status" style="color:{alert_color}">
+                {'⚠ 科技板块压力偏高' if spread.get('is_alert') else '✓ 正常'}
+            </div>
+        </div>"""
+
+    # QQQ 三因子确认卡片
+    qqq = data.get("qqq_tail_confirmation", {})
+    if qqq:
+        score = qqq.get("confirmation_score", 0)
+        sev_color = {"normal": "#3fb950", "high": "#f0883e", "critical": "#f85149"}
+        sev = qqq.get("severity", "normal")
+        cards += f"""
+        <div class="metric-card" style="border-color:#30363d; border-left: 3px solid {sev_color.get(sev, '#8b949e')}">
+            <div class="metric-ticker">QQQ 尾部风险确认</div>
+            <div class="metric-value" style="font-size:22px">{score}/3</div>
+            <div class="metric-label">三因子确认分数</div>
+            <div class="metric-detail">
+                <span>Skew: {'⚠' if qqq.get('components', {}).get('qqq_skew') else '✓'}</span>
+                <span>VXN: {'⚠' if qqq.get('components', {}).get('vxn_level') else '✓'}</span>
+                <span>Spread: {'⚠' if qqq.get('components', {}).get('vxn_vix_relative') else '✓'}</span>
+            </div>
+            <div class="metric-status" style="color:{sev_color.get(sev, '#8b949e')}">{sev.upper()}</div>
+        </div>"""
+
+    if not cards:
+        return '<p style="color:#8b949e; padding:20px; text-align:center">波动率状态数据不完整</p>'
+
+    return cards
+
+
+def _fmt_pct(value) -> str:
+    """格式化百分比"""
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value) * 100:+.1f}%"
+    except (ValueError, TypeError):
+        return "N/A"
 
 
 def _build_macro_chart() -> str:
@@ -645,8 +787,9 @@ def _render_page(
     zscore_chart: str,
     cross_chart: str,
     macro_chart: str = "",
+    volatility_cards: str = "",
 ) -> str:
-    """渲染完整的看板 HTML 页面（v1.2: 含自动刷新、宏观面板、响应式布局）。"""
+    """渲染完整的看板 HTML 页面（v1.2.1: 含波动率面板）。"""
     alert_badge = (
         f'<span class="badge badge-alert">⚠ {alert_count} 预警</span>'
         if alert_count > 0
@@ -863,6 +1006,12 @@ def _render_page(
             <div class="chart-box">{cross_chart}</div>
         </div>
         {macro_section}
+        <div class="section">
+            <div class="section-title">
+                <span class="icon">🌡</span> 波动率状态 - VIX / VXN (v1.2.1)
+            </div>
+            <div class="cards">{volatility_cards}</div>
+        </div>
     </div>
     <div class="footer">
         程序化盘后流动性与尾部风险监控引擎 &copy; 2024-2026 |
