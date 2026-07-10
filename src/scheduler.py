@@ -1,14 +1,18 @@
 """
-任务调度器模块 (scheduler.py)
+任务调度器模块 (scheduler.py) v1.1
 
 功能：
 - 使用 APScheduler 配置每日盘后（美东时间 17:00）自动执行
 - 支持 Windows 任务计划程序 / Linux cron 作为备选方案
 - 提供调度器的启动、停止和状态查询
+- 集成 VIX 期限结构、FINRA 自动爬取、跨标的统计检验
 
 使用方式:
     # 以调度模式运行（持续等待定时触发）
     python -m src.scheduler
+
+    # 以调度模式运行 + 同时启动 Web 看板
+    python -m src.scheduler --serve
 
     # 或直接运行一次完整流水线
     python -m src.main
@@ -163,9 +167,16 @@ class PipelineScheduler:
 
 def main():
     """调度器入口点。"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="尾部风险监控引擎 - 调度器模式")
+    parser.add_argument("--serve", action="store_true", help="同时启动 Web 看板服务器")
+    parser.add_argument("--port", type=int, default=8080, help="Web 看板端口（默认 8080）")
+    args = parser.parse_args()
+
     setup_logging()
 
-    logger.info("程序化盘后流动性与尾部风险监控引擎 - 调度器模式")
+    logger.info("程序化盘后流动性与尾部风险监控引擎 v1.1 - 调度器模式")
 
     scheduler = PipelineScheduler()
     scheduler.configure_daily_jobs()
@@ -173,6 +184,19 @@ def main():
     # 打印已配置的任务
     for job in scheduler.list_jobs():
         logger.info(f"  任务: {job['name']} | 下次执行: {job['next_run']} | 触发器: {job['trigger']}")
+
+    # ── 可选: 启动 Web 看板 ──
+    if args.serve:
+        import threading
+        from src.presentation.web_dashboard import start_dashboard
+
+        web_thread = threading.Thread(
+            target=start_dashboard,
+            kwargs={"port": args.port},
+            daemon=True,
+        )
+        web_thread.start()
+        logger.info(f"Web 看板已启动于后台: http://localhost:{args.port}")
 
     logger.info("调度器运行中，按 Ctrl+C 退出...")
     scheduler.start(blocking=True)

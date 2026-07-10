@@ -1,8 +1,10 @@
-# 程序化盘后流动性与尾部风险监控引擎
+# 程序化盘后流动性与尾部风险监控引擎 v1.1
 
 自动化的本地数据管道，在每日美股盘后自动抓取、清洗并计算关键的宏观流动性指标与期权衍生品风险信号。通过程序化扫描核心宽基 ETF 的隐含波动率斜率及保证金债务动量，为量化策略和主观资产配置提供"尾部风险"预警信号。
 
 本项目隶属于 **alphaear-logic-visualizer** 架构下的宏观与衍生品监控模块。
+
+> **v1.1 更新**: Google Sheets 推送已替换为本地 **FastAPI + Plotly Web 看板**，新增 FINRA 自动爬取、跨标的剪刀差统计检验和 Z-Score 追踪图表。
 
 ---
 
@@ -15,6 +17,7 @@
 │                     数据接入层                           │
 │  Polygon.io API  │  FRED API  │  Cboe VIX Futures      │
 │  (EOD 期权链)      (M2 货币供应)  (期限结构)             │
+│  FINRA 自动爬取 (保证金债务 XLSX)                        │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ▼
@@ -22,12 +25,14 @@
 │                     计算引擎层                           │
 │  数据清洗 → Delta IV 插值 → Skew 计算 → Z-Score 预警    │
 │  宏观杠杆分析 (Margin Debt / M2) → 动量反转检测          │
+│  跨标的剪刀差统计检验 (滚动 Z-Score + 语义解释)          │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────┐
 │                   展现与预警层                           │
-│  Google Sheets 看板  │  终端 Rich 输出  │  Webhook 推送  │
+│  Web 看板 (FastAPI+Plotly)  │  终端 Rich 输出  │  Webhook│
+│  http://localhost:8080          │  彩色报告      │  推送   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -37,7 +42,7 @@
 |------|---------|---------|------|
 | **核心指数ETF期权暗流扫描** | SPY, QQQ, IWM, DIA | 25Δ IV Skew, 跨标的剪刀差, VIX期限结构 | 每日 |
 | **宏观流动性与杠杆压力测试** | M2货币供应, FINRA保证金债务 | 杠杆占比(Ratio), MoM/YoY动量 | 每月 |
-| **数据清洗与输出管道** | 以上全部 | 数据质量过滤, Google Sheets自动推送 | 持续 |
+| **数据清洗与输出管道** | 以上全部 | 数据质量过滤, Web UI 看板（替代 Google Sheets） | 持续 |
 
 ---
 
@@ -48,7 +53,7 @@
 - 以下 API 密钥（参见 [API 密钥申请指南](#api-密钥申请指南)）：
   - Polygon.io API Key (免费层可用)
   - FRED API Key (免费)
-  - Google Cloud Service Account (免费，用于 Google Sheets 推送)
+- 现代浏览器（Chrome / Firefox / Edge），用于访问本地 Web 看板
 
 ---
 
@@ -86,18 +91,43 @@ copy .env.template .env
 # 运行完整 ETL 流水线（数据拉取 → 计算 → 报告）
 python -m src.main
 
+# 运行完整流水线后自动启动 Web 看板
+python -m src.main --serve
+
+# 仅启动 Web 看板（使用已有数据，不运行流水线）
+python -m src.main --mode push-only
+
+# 自定义 Web 看板端口
+python -m src.main --serve --port 3000
+
 # 仅拉取数据（不计算）
 python -m src.main --mode fetch-only
 
 # 仅计算（使用本地已保存的数据）
 python -m src.main --mode calc-only
 
-# 运行月度宏观流动性分析
+# 运行月度宏观流动性分析（自动爬取 FINRA 数据）
+python -m src.main --macro
+
+# 运行月度宏观流动性分析（手动指定 CSV）
 python -m src.main --macro --margin-debt-csv path/to/finra_margin_debt.csv
 
-# 以调度器模式运行（每日盘后自动执行）
-python -m src.scheduler
+# 以调度器模式运行（每日盘后自动执行）+ Web 看板
+python -m src.scheduler --serve
+
+# 以调度器模式运行（含自定义端口）
+python -m src.scheduler --serve --port 3000
 ```
+
+### 5. 访问 Web 看板
+
+启动后打开浏览器访问 **http://localhost:8080**，即可查看：
+- 📊 各标的 Skew 快照卡片
+- ⚠ 实时预警状态表格
+- 📈 SPY / QQQ / IWM / DIA 的 Skew 历史走势
+- 📉 Z-Score 追踪图（含 ±2σ 预警线）
+- 🔀 跨标的 Skew 剪刀差图表
+- 📥 CSV 数据导出按钮
 
 ---
 
@@ -114,17 +144,6 @@ python -m src.scheduler
 1. 访问 [https://fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html)
 2. 填写表单申请免费 API Key
 3. 填入 `.env` 的 `FRED_API_KEY`
-
-### Google Sheets API
-
-1. 访问 [Google Cloud Console](https://console.cloud.google.com/)
-2. 创建新项目或选择现有项目
-3. 启用 **Google Sheets API** 和 **Google Drive API**
-4. 创建 Service Account：
-   - APIs & Services → Credentials → Create Credentials → Service Account
-   - 下载 JSON 凭证文件，保存到 `credentials/google_service_account.json`
-5. 将 Service Account 的 email 添加为你的 Google Sheets 的编辑者
-6. 填入 `.env` 的 `GOOGLE_SPREADSHEET_ID`（从 Sheets URL 中提取）
 
 ---
 
@@ -145,6 +164,7 @@ project-root/
 │   │   ├── polygon_client.py # Polygon.io 期权链 API
 │   │   ├── fred_client.py    # FRED M2 数据 API
 │   │   ├── vix_client.py     # Cboe VIX 期货数据
+│   │   ├── finra_scraper.py  # FINRA 保证金债务自动爬取 🆕
 │   │   ├── data_writer.py    # 本地 JSON/Parquet 存储
 │   │   └── eod_fetcher.py    # 日终批量抓取编排
 │   ├── calculation/          # 计算引擎层
@@ -152,16 +172,19 @@ project-root/
 │   │   ├── delta_interpolator.py  # 25Δ IV 样条插值
 │   │   ├── skew_calculator.py     # Skew 与剪刀差计算
 │   │   ├── term_structure.py      # 波动率期限结构
+│   │   ├── cross_asset_signals.py # 跨标的剪刀差统计检验 🆕
 │   │   ├── macro_leverage.py      # 宏观杠杆分析
 │   │   ├── risk_signals.py        # Z-Score 预警信号
 │   │   └── master_aggregator.py   # 主数据帧汇总
 │   └── presentation/        # 展现与预警层
-│       ├── google_sheets.py  # Google Sheets 推送
+│       ├── web_dashboard.py  # FastAPI + Plotly Web 看板 🆕 替代 Google Sheets
+│       ├── google_sheets.py  # Google Sheets 推送 (v1.0 遗留，可移除)
 │       ├── webhook_pusher.py # Webhook 推送
 │       ├── terminal_alerts.py # 终端 Rich 报告
 │       └── logging_setup.py  # 日志配置
 ├── data/                    # 数据存储
 │   ├── raw/                 # 原始 API 响应
+│   │   └── finra/           # FINRA 自动爬取缓存 🆕
 │   └── processed/           # 计算后数据
 ├── tests/                   # 测试
 │   ├── test_data_ingestion/
@@ -200,10 +223,10 @@ project-root/
 
 | 层级 | 核心技术 |
 |------|---------|
-| 数据接入 | `httpx` (异步HTTP), `tenacity` (重试), `fredapi`, Polygon REST API |
-| 计算引擎 | `numpy`, `scipy` (样条插值), `pandas` (时间序列) |
+| 数据接入 | `httpx` (异步HTTP), `tenacity` (重试), `fredapi`, Polygon REST API, FINRA 网页爬取 |
+| 计算引擎 | `numpy`, `scipy` (样条插值), `pandas` (时间序列), 滚动 Z-Score 统计检验 |
 | 数据存储 | 本地 JSON (原始), Parquet/`pyarrow` (处理后) |
-| 展现预警 | `gspread` (Google Sheets), `rich` (终端), `loguru` (日志) |
+| 展现预警 | `FastAPI` (Web 服务), `Plotly` (交互式图表), `uvicorn` (ASGI 服务器), `rich` (终端), `loguru` (日志) |
 | 任务调度 | `APScheduler` (Cron) |
 | 开发质量 | `pytest`, `ruff`, `pre-commit` |
 
@@ -214,8 +237,9 @@ project-root/
 1. **Polygon.io 速率限制**：免费层 5次/分钟，本项目已内置令牌桶速率限制器
 2. **期权链数据量**：单个标的单到期日可能有数百条记录，插值前已做 DTE 过滤
 3. **插值边界处理**：当期权链中不存在精确 25Δ 合约时，样条插值需注意外推边界（已内置保护）
-4. **FINRA 数据获取**：FINRA 保证金债务无公开 API，需要每月手动下载 CSV 或通过网页抓取
-5. **Google Sheets 配额**：免费层 60次读+60次写/分钟，本项目每日仅需少量写入
+4. **FINRA 数据获取**：v1.1 已实现自动爬取，含月度缓存机制；若自动爬取失败，仍支持手动 CSV 传入
+5. **Web 看板部署**：默认监听 `0.0.0.0:8080`，局域网内其他设备可直接访问；生产环境建议配合 nginx 反向代理
+6. **跨标的统计检验可靠性**：Z-Score 需至少 10 个交易日的历史数据，初期积累不足时会自动降级为非预警
 
 ---
 
@@ -224,6 +248,17 @@ project-root/
 - [x] Phase 1 (Week 1): 多标的数据管道连通
 - [x] Phase 2 (Week 2): 插值算法与矩阵对比
 - [x] Phase 3 (Week 3): 自动化看板对接
+- [x] Phase 4 (v1.1): Web UI 看板替代 Google Sheets + FINRA 自动爬取 + 跨标的统计检验
+
+### v1.1 变更摘要
+
+| 缺口 | 修复方式 | 涉及文件 |
+|:--|:--|:--|
+| VIX Term Structure 死代码 | 在 `run_full_pipeline()` 中调用 VIXClient | `main.py` |
+| Google Sheets 替换为 Web UI | 新增 FastAPI + Plotly 看板，含 JSON API | `web_dashboard.py` |
+| FINRA 手动传参 | 自动爬取 FINRA XLSX，含月度缓存 | `finra_scraper.py`, `main.py` |
+| 跨标的剪刀差无统计检验 | 独立 Z-Score + 金融语义解释 | `cross_asset_signals.py` |
+| `push-only` 模式缺失 | 补全 `--serve` / `--port` 参数 | `main.py`, `scheduler.py` |
 
 ---
 
