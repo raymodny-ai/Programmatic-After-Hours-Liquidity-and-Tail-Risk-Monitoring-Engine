@@ -1,0 +1,22 @@
+node_modules/
+.next/
+dist/
+out/
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript
+*.tsbuildinfo

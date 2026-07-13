@@ -1,0 +1,96 @@
+# Docker Compose — V1.3 三节点编排
+# ----------------------------------------------------------------------------
+# quant-api-node  : FastAPI Headless 后端 (8080 → 80 in container)
+# quant-ui-node   : Next.js 前端 (3000)
+# quant-state-node: Redis (6379)
+# nginx 反代对外暴露 80/443 端口（默认仅 80）
+# ----------------------------------------------------------------------------
+
+version: "3.9"
+
+services:
+  # ─────────────── Redis 热缓存 ───────────────
+  quant-state-node:
+    image: redis:7-alpine
+    container_name: quant-state-node
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - quant-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - quant-net
+
+  # ─────────────── FastAPI 后端 ───────────────
+  quant-api-node:
+    build:
+      context: ..
+      dockerfile: v13/Dockerfile.api
+    container_name: quant-api-node
+    restart: unless-stopped
+    depends_on:
+      quant-state-node:
+        condition: service_healthy
+    environment:
+      QUANT_REDIS_HOST: quant-state-node
+      QUANT_REDIS_PORT: 6379
+      QUANT_SQLITE_PATH: /app/data/v13_state.db
+      QUANT_SNAPSHOT_DIR: /app/data/processed
+      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      THETADATA_PROXY_URL: ${THETADATA_PROXY_URL:-http://host.docker.internal:25510}
+    ports:
+      - "8080:8080"
+    volumes:
+      - quant-data:/app/data
+      - ./deploy/cron.env:/app/cron.env:ro
+    networks:
+      - quant-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ─────────────── Next.js 前端 ───────────────
+  quant-ui-node:
+    build:
+      context: ..
+      dockerfile: v13/Dockerfile.ui
+    container_name: quant-ui-node
+    restart: unless-stopped
+    depends_on:
+      - quant-api-node
+    environment:
+      NEXT_PUBLIC_API_BASE: http://quant-api-node:8080
+      NEXT_PUBLIC_WS_BASE:   ws://quant-api-node:8080
+    ports:
+      - "3000:3000"
+    networks:
+      - quant-net
+
+  # ─────────────── Nginx 反向代理 ───────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: quant-nginx
+    restart: unless-stopped
+    depends_on:
+      - quant-api-node
+      - quant-ui-node
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - quant-net
+
+volumes:
+  quant-redis-data:
+  quant-data:
+
+networks:
+  quant-net:
+    driver: bridge

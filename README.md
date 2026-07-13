@@ -1,4 +1,4 @@
-# 程序化盘后流动性与尾部风险监控引擎 v1.2.1
+# 程序化盘后流动性与尾部风险监控引擎 v1.3
 
 自动化的本地数据管道，在每日美股盘后自动抓取、清洗并计算关键的宏观流动性指标与期权衍生品风险信号。通过程序化扫描核心宽基 ETF 的隐含波动率斜率及保证金债务动量，为量化策略和主观资产配置提供"尾部风险"预警信号。
 
@@ -6,6 +6,8 @@
 
 > **v1.2 更新**: PCHIP 单调样条插值、yfinance 备用数据源降级、VXN 独立接入、NYSE 交易日历、API Key 认证、宏观流动性 Web 面板、移动端响应式、完整测试覆盖。
 > **v1.2.1 更新**: VXN 六维积分制自动化告警引擎（含分层状态机与冷却/升级机制）、QQQ 三因子尾部风险联合确认、全链路数据质量可见性（signal_quality / greeks_source / skipped ticker 展示）、BSM Delta 参数校验加固、VXN 管线鲁棒性增强（数据不可用标记、状态文件原子写入、触发原因持久化）。
+>
+> **V1.3 更新**: 微服务三节点架构（FastAPI Headless + Next.js 14 + Redis）、SQLite 持久化层、APScheduler 21:00 美东调度、ThetaData 本地代理接入、深度 OTM/远月合约完备性校验、FRED M2 + FINRA Margin Debt 自动对齐、SPY/QQQ/IWM 矩阵化 Skew、WebSocket `/ws/alerts` 实时推送、Docker Compose + Nginx 反代、ddns-go 远程访问、122 项测试全通过。详见 `v13/docs/MIGRATION_v121_to_v13.md`。
 
 ---
 
@@ -287,6 +289,7 @@ project-root/
 - [x] Phase 4 (v1.1): Web UI 看板替代 Google Sheets + FINRA 自动爬取 + 跨标的统计检验
 - [x] Phase 5 (v1.2): PCHIP 插值 + yfinance 备用源降级 + VXN 接入 + NYSE 交易日历 + Web UI 深化 + 测试覆盖
 - [x] Phase 6 (v1.2.1): VXN 六维积分制自动化告警引擎 + QQQ 三因子尾部风险联合确认 + 全链路数据质量可见性 + BSM Delta 参数校验加固 + VXN 管线鲁棒性增强
+- [x] Phase 7 (V1.3): 微服务三节点架构（FastAPI Headless + Next.js 14 + Redis） + SQLite 持久化 + APScheduler 21:00 美东调度 + ThetaData 本地代理接入 + Docker Compose + Nginx 反代 + ddns-go 远程访问 + 122 项测试全通过
 
 ### v1.2 变更摘要
 
@@ -322,6 +325,22 @@ project-root/
 | VXN/VIX 拉取失败时静默跳过 | 构造 explicit `unavailable` 状态标记写入 snapshot | `main.py` |
 | AlertStateManager 不持久化触发原因 | 新增 `last_reasons` 持久化 + `should_notify` 接收 reasons 参数 | `vxn_alert_engine.py` |
 | 状态文件写入非原子 | `_save` 改为 temp + replace 原子写入 | `vxn_alert_engine.py` |
+
+### V1.3 变更摘要
+
+| 缺口 | 修复方式 | 涉及文件 |
+|:--|:--|:--|
+| 单体 CLI 难扩展 | 拆分为三节点微服务（quant-api-node + quant-ui-node + quant-state-node） | `v13/quant_api_node/`, `v13/quant_ui_node/`, `v13/quant_state_node/` |
+| 无 REST API | FastAPI Headless + Pydantic v2 契约 + 12 个核心数据模型 + 18 paths | `v13/quant_api_node/app/api/v1/` |
+| 无实时推送 | WebSocket `/ws/alerts` + Redis pub/sub + 客户端 25s 心跳 + 指数退避重连 | `routers/ws_alerts.py`, `useAlerts.ts` |
+| Polygon/yfinance 无 OTM 远月 | ThetaData 本地代理 + 深度 OTM ±30% 完备性校验 + 远月 ≥90DTE ≥ 3 期权 | `services/data_sources/thetadata_client.py`, `completeness_check.py` |
+| 仅 JSON 快照 | SQLite 5 表（macro_series / risk_config / audit_log / skew_history / alert_log）+ WAL + Redis 热缓存 | `quant_state_node/persistence/sqlite_store.py`, `redis_cache.py` |
+| 手工触发 / cron | APScheduler BackgroundScheduler + 美东 21:00 + 30 分钟健康巡检 | `scheduler/daily_runner.py` |
+| 无统一配置中心 | FastAPI `/api/v1/config` CRUD + YAML + 审计日志 | `routers/config.py`, `routers/audit.py` |
+| Streamlit/Plotly 前端不足 | Next.js 14 + TypeScript + 5 页面（HUD / 视图A/B/C / 终端）+ TradingView + Three.js 3D 曲面 + xterm 终端 | `v13/quant_ui_node/src/` |
+| 无容器化部署 | Docker Compose 4 服务 + Nginx 反代（含 WS Upgrade 86400s） + ddns-go 远程访问 | `v13/docker-compose.yml`, `v13/deploy/` |
+| v1.2.1 脚本会失效 | 4 个 v1.2.1 兼容端点（`/api/latest` `/api/stats` `/api/skipped` `/api/vxn_alert`）+ 开关 `QUANT_ENABLE_V121_LEGACY_ENDPOINTS` | `api/v1/legacy_compat.py` |
+| 内存计算器无调试入口 | 终端日志页 `/logs` 用 xterm.js 实时显示 loguru 滚动日志 | `components/TerminalLogs.tsx` |
 
 ---
 

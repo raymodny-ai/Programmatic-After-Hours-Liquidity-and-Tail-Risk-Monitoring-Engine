@@ -1,0 +1,43 @@
+# quant-api-node Dockerfile
+# ----------------------------------------------------------------------------
+# V1.3 后端 (FastAPI Headless) — 基于 Python 3.11-slim
+# 仅暴露 HTTP API，不含 Web UI
+# ----------------------------------------------------------------------------
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    QUANT_API_PORT=8080
+
+# 系统依赖（curl 用于健康检查）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+
+WORKDIR /app
+
+# 依赖分离以利用 Docker 缓存
+COPY v13/quant_api_node/requirements.api.txt /app/requirements.api.txt
+RUN pip install -r /app/requirements.api.txt
+
+# 复制代码
+COPY v13 /app/v13
+COPY src /app/src
+COPY config /app/config
+
+# 数据 / 日志 目录
+RUN mkdir -p /app/data/processed /app/data/raw /app/logs
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:${QUANT_API_PORT}/health || exit 1
+
+# 暴露端口
+EXPOSE 8080
+
+# 启动命令 (uvicorn 2 worker)
+CMD ["sh", "-c", "uvicorn v13.quant_api_node.app.main:app --host 0.0.0.0 --port ${QUANT_API_PORT} --workers 2 --proxy-headers --forwarded-allow-ips=*"]
