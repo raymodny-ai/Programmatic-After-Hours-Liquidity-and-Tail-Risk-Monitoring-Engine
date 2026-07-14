@@ -83,6 +83,16 @@ async def fetch_single_ticker(
     try:
         logger.info(f"[{ticker}] 开始抓取期权链，到期日={expiration_str}")
 
+        # ── v1.2.2 (OpenClaw patch): 首次 ticker 探测 Polygon snapshot 权限 ──
+        # 一次 403 探测后 flip 开关，后续 ticker 跳过 5 次重试风暴
+        if ticker == TARGET_SYMBOLS[0]:
+            entitled = await client.probe_snapshot_entitlement()
+            if not entitled:
+                logger.warning(
+                    "Polygon snapshot 权限探测失败(免费层/key 无权)。"
+                    "本次 4 个 ticker 全部跳过 Polygon, 走 yfinance 备用源。"
+                )
+
         snapshots = await client.get_option_snapshots(
             ticker=ticker,
             expiration_date=expiration_str,

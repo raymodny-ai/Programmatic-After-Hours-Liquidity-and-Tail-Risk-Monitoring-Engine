@@ -39,9 +39,10 @@ from src.calculation.vxn_alert_engine import (
     calculate_vxn_alert,
     AlertStateManager,
 )
-from src.presentation import web_dashboard
 from src.presentation.logging_setup import setup_logging
 from src.presentation.terminal_alerts import print_full_report
+# web_dashboard 是 v1.2.1 单体面板 (含 plotly)。V1.3 Headless API 不需要 plotly。
+# 改为函数内 lazy import (仅 push-only / --serve 模式才用)。
 
 
 async def run_full_pipeline() -> dict[str, Any]:
@@ -91,6 +92,9 @@ async def run_full_pipeline() -> dict[str, Any]:
     vxn_regime = None
     vxn_vix_signal = None
     qqq_tail_confirmation = None
+    # ── v1.2.2 (OpenClaw patch 2026-07-11): 在 try 之前初始化，避免抓取异常导致 UnboundLocalError ──
+    vxn_alert_result = None
+    vxn_notification_action = None
 
     try:
         vix_client = VIXClient()
@@ -157,8 +161,6 @@ async def run_full_pipeline() -> dict[str, Any]:
             )
 
         # ── v1.2.1: VXN 自动化告警引擎（积分制分层状态机）──
-        vxn_alert_result = None
-        vxn_notification_action = None
         if isinstance(vxn_result, pd.DataFrame) and not vxn_result.empty:
             vxn_alert_result = calculate_vxn_alert(
                 vxn_history=vxn_result,
@@ -284,6 +286,37 @@ async def run_full_pipeline() -> dict[str, Any]:
     # 保存主数据帧快照
     snapshot_df = aggregated["daily_snapshot_df"]
     writer.save_master_snapshot(snapshot_df)
+
+    # ── V1.3 兼容桥接 ──
+    # v1.2.1 写 daily_risk_snapshot.parquet,v13 quant-api-node 通过
+    # SnapshotCompat.read_latest_snapshot() 读 latest_snapshot.json。
+    # 两者数据契约断裂,此处桥接:parquet -> JSON 字典格式。
+    try:
+        from v13.quant_state_node.persistence.snapshot_compat import SnapshotCompat
+        _snap_json = {
+            "date": aggregated.get("as_of_date") or date.today().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "snapshots": {
+                row["ticker"]: {
+                    "ticker": row["ticker"],
+                    "skew_25d": row.get("skew_25d"),
+                    "skew_spread": row.get("skew_spread"),
+                    "iv_put_25d": row.get("iv_put_25d"),
+                    "iv_call_25d": row.get("iv_call_25d"),
+                    "put_count": row.get("put_count"),
+                    "call_count": row.get("call_count"),
+                    "status": row.get("status"),
+                    "data_source": row.get("data_source", "yfinance+BSM"),
+                    "signal_quality": row.get("signal_quality", "fallback_estimated"),
+                }
+                for _, row in snapshot_df.iterrows()
+            },
+            "as_of_date": aggregated.get("as_of_date"),
+            "source": "live",
+        }
+        SnapshotCompat().write_latest_snapshot(_snap_json)
+    except Exception as _e:
+        logger.warning(f"V1.3 snapshot 桥接失败 (非致命,继续): {_e}")
 
     # ── v1.2.1: 保存波动率状态快照供 Web 看板读取 ──
     _save_volatility_regime_snapshot(
@@ -532,7 +565,7 @@ async def async_main():
     # ── push-only: 仅启动 Web 看板 ──
     if args.mode == "push-only":
         logger.info("启动 Web 风险看板（push-only 模式）...")
-        web_dashboard.start_dashboard(port=args.port)
+        await web_dashboard.serve_dashboard(port=args.port)
         return {"status": "web_dashboard_started", "port": args.port}
 
     # ── 月度宏观分析 ──
@@ -600,7 +633,7 @@ async def async_main():
     # ── --serve: 流水线完成后自动启动 Web 看板 ──
     if args.serve and args.mode != "push-only":
         logger.info(f"--serve 已启用，启动 Web 看板 (端口 {args.port})...")
-        web_dashboard.start_dashboard(port=args.port)
+        await web_dashboard.serve_dashboard(port=args.port)
 
     logger.info("流水线执行完成")
     return result

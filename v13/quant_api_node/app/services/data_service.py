@@ -125,7 +125,23 @@ class DataService:
                     "ok": True,
                 }
             )
-            return {"ok": True, "result": result if isinstance(result, dict) else str(result)}
+            # v1.2.1 run_full_pipeline 返回 aggregated dict,内含 DataFrame / Path / datetime
+            # 等不可 JSON 序列化的字段。为避免 FastAPI 500,只返回顶层“是否成功”+ pipeline
+            # 写入的最新 JSON 快照路径(下游从 /api/latest 读详情)。
+            ticker_count = 0
+            if isinstance(result, dict):
+                df = result.get("daily_snapshot_df")
+                if hasattr(df, "shape"):
+                    ticker_count = int(df.shape[0])
+                elif isinstance(df, list):
+                    ticker_count = len(df)
+            return {
+                "ok": True,
+                "as_of_date": date.today().isoformat(),
+                "tickers_aggregated": ticker_count,
+                "snapshot_path": "/api/latest",
+                "skew_endpoint": "/api/v1/options/skew",
+            }
         except Exception as e:
             logger.exception("pipeline 执行失败: %s", e)
             return {"ok": False, "error": str(e)}

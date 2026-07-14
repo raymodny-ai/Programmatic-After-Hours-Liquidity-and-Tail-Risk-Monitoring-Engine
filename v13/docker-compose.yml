@@ -16,7 +16,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - quant-redis-data:/data
     healthcheck:
@@ -46,7 +46,7 @@ services:
       FRED_API_KEY: ${FRED_API_KEY:-}
       THETADATA_PROXY_URL: ${THETADATA_PROXY_URL:-http://host.docker.internal:25510}
     ports:
-      - "8080:8080"
+      - "8090:8080"
     volumes:
       - quant-data:/app/data
       - ./deploy/cron.env:/app/cron.env:ro
@@ -68,7 +68,7 @@ services:
       NEXT_PUBLIC_API_BASE: http://quant-api-node:8080
       NEXT_PUBLIC_WS_BASE:   ws://quant-api-node:8080
     ports:
-      - "3000:3000"
+      - "3001:3000"
     networks:
       - quant-net
 
@@ -81,7 +81,7 @@ services:
       - quant-api-node
       - quant-ui-node
     ports:
-      - "80:80"
+      - "8880:80"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:

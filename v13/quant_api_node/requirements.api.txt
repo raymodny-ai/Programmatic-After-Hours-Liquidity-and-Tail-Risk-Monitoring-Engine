@@ -1,8 +1,14 @@
 # V1.3 dependencies for quant-api-node
 # ----------------------------------------------------------------------------
-# 注：v13 内部使用 src/ 与 config/，额外依赖仅限 V13 新增
+# v13 pipeline 跑 src/main.py run_full_pipeline()(= v1.2.1 ETL 复用)。
+# 除 V13 新增包外,还需继承 v1.2.1 pyproject.toml 的核心 dep:
+#   rich (terminal_alerts) · plotly (web_dashboard, 仅 push-only 用)
+#   pyarrow (parquet 快照) · yfinance (fallback 期权链) · fredapi (M2/VIX)
+#   pandas-market-calendars (NYSE 交易日历) · python-dotenv (.env 装载)
+# 不含 gspread/google-auth* (Google Sheets 推送,V1.3 不依赖)
 # ----------------------------------------------------------------------------
 
+# --- V13 自身依赖 ---
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
@@ -17,6 +23,17 @@ pyyaml>=6.0.1
 numpy>=1.26.0
 pandas>=2.2.0
 scipy>=1.13.0
+
+# --- v1.2.1 ETL 复用 ---
+requests>=2.32.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+plotly>=5.22.0
+pyarrow>=16.0.0
+fredapi>=0.5.0
+yfinance>=0.2.40
+pandas-market-calendars>=4.4.0
+openpyxl>=3.1.0
 
 # 测试
 pytest>=8.2.0

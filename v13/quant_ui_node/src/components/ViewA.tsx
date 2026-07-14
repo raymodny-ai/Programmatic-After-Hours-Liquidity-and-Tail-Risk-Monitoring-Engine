@@ -36,15 +36,15 @@ export default function ViewA() {
 
   const { data: macroResp } = useSWR<MacroApiResp>(
     '/api/v1/macro/series',
-    (p) => fetchApi<MacroApiResp>(p),
+    (p: string) => fetchApi<MacroApiResp>(p),
   );
   const { data: leverageResp } = useSWR<LeverageApiResp>(
     '/api/v1/macro/leverage',
-    (p) => fetchApi<LeverageApiResp>(p),
+    (p: string) => fetchApi<LeverageApiResp>(p),
   );
   const { data: skewResp } = useSWR<SkewApiResp>(
     '/api/v1/options/skew',
-    (p) => fetchApi<SkewApiResp>(p),
+    (p: string) => fetchApi<SkewApiResp>(p),
   );
 
   // 初始化 TradingView 图表

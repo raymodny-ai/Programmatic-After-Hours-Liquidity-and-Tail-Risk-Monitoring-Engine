@@ -130,13 +130,13 @@ export default function HUD() {
 
   const { data: health } = useSWR<HealthStatus>(
     '/health',
-    (p) => fetchApi<HealthStatus>(p),
+    (p: string) => fetchApi<HealthStatus>(p),
     { refreshInterval: 10000 },
   );
 
   const { data: skewData } = useSWR<{ data?: { snapshots?: Record<string, SkewSnapshot> } }>(
     asOf ? `/api/v1/options/skew?as_of=${asOf}` : null,
-    (p) => fetchApi(p),
+    (p: string) => fetchApi(p),
     { refreshInterval: 30000 },
   );
 

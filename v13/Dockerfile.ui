@@ -7,13 +7,19 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY v13/quant_ui_node/package.json v13/quant_ui_node/package-lock.json* ./
-RUN npm ci --omit=dev
+RUN npm install --no-audit --no-fund --legacy-peer-deps
 
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY v13/quant_ui_node ./
+
+ARG NEXT_PUBLIC_API_BASE=http://quant-api-node:8080
+ARG NEXT_PUBLIC_WS_BASE=ws://quant-api-node:8080
+ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_WS_BASE=$NEXT_PUBLIC_WS_BASE
 ENV NEXT_TELEMETRY_DISABLED=1
+
 RUN npm run build
 
 FROM node:20-alpine AS runner

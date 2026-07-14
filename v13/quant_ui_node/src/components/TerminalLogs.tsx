@@ -24,7 +24,7 @@ export default function TerminalLogs() {
   // 初始历史日志
   const { data: historyResp } = useSWR<{ ok: boolean; data?: LogEntry[] }>(
     '/api/v1/audit?limit=200',
-    (p) => fetchApi(p),
+    (p: string) => fetchApi(p),
     { refreshInterval: 0 },
   );
 

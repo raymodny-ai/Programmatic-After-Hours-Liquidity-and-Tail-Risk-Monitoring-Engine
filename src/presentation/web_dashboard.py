@@ -547,10 +547,18 @@ async def api_latest():
 
     df["date"] = pd.to_datetime(df["date"])
     latest = df[df["date"] == df["date"].max()]
+    # ── v1.2.2 (OpenClaw patch 2026-07-11): 净化 NaN/Inf,避免 JSON 序列化错误 ──
+    import math
+    records = latest.replace([float("inf"), float("-inf")], None).where(pd.notna(latest), None).to_dict(orient="records")
+    # 二次清洗: pandas .where 可能漏 inf (replace 后才 where)
+    for rec in records:
+        for k, v in list(rec.items()):
+            if isinstance(v, float) and not math.isfinite(v):
+                rec[k] = None
     return {
         "date": df["date"].max().strftime("%Y-%m-%d"),
         "total_records": len(latest),
-        "records": latest.where(pd.notna(latest), None).to_dict(orient="records"),
+        "records": records,
     }
 
 
@@ -573,10 +581,17 @@ async def api_ticker_history(ticker: str):
         sub = df[df["ticker"] == f"CROSS:{ticker_upper}"].sort_values("date")
 
     sub["date"] = sub["date"].astype(str)
+    # ── v1.2.2: NaN/Inf 净化 ──
+    import math
+    cleaned = sub.replace([float("inf"), float("-inf")], None).where(pd.notna(sub), None).to_dict(orient="records")
+    for rec in cleaned:
+        for k, v in list(rec.items()):
+            if isinstance(v, float) and not math.isfinite(v):
+                rec[k] = None
     return {
         "ticker": ticker_upper,
         "count": len(sub),
-        "history": sub.where(pd.notna(sub), None).to_dict(orient="records"),
+        "history": cleaned,
     }
 
 
@@ -1274,7 +1289,7 @@ def _render_empty_state() -> str:
 
 
 def start_dashboard(host: str = "0.0.0.0", port: int = 8080) -> None:
-    """启动 Web 看板服务器。"""
+    """启动 Web 看板服务器（同步入口，独立事件循环）。"""
     import uvicorn
 
     logger.info(f"Web 风险看板已启动: http://localhost:{port}")
@@ -1285,6 +1300,25 @@ def start_dashboard(host: str = "0.0.0.0", port: int = 8080) -> None:
         log_level="warning",
         reload=False,
     )
+
+
+async def serve_dashboard(host: str = "0.0.0.0", port: int = 8080) -> None:
+    """启动 Web 看板服务器（异步入口，复用当前事件循环）。
+
+    用于在 asyncio 上下文中启动 uvicorn，避免嵌套事件循环冲突。
+    """
+    import uvicorn
+
+    logger.info(f"Web 风险看板已启动: http://localhost:{port}")
+    config = uvicorn.Config(
+        "src.presentation.web_dashboard:app",
+        host=host,
+        port=port,
+        log_level="warning",
+        reload=False,
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 if __name__ == "__main__":

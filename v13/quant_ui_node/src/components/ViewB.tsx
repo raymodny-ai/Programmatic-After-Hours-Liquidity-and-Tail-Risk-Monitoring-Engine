@@ -25,7 +25,7 @@ export default function ViewB({ ticker = 'SPY' }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const { data: resp } = useSWR<SurfaceApiResp>(
     `/api/v1/options/surface?ticker=${ticker}`,
-    (p) => fetchApi<SurfaceApiResp>(p),
+    (p: string) => fetchApi<SurfaceApiResp>(p),
   );
 
   useEffect(() => {

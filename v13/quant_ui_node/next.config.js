@@ -12,10 +12,8 @@ const nextConfig = {
         source: '/api/v1/:path*',
         destination: `${process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:8080'}/api/v1/:path*`,
       },
-      {
-        source: '/ws/:path*',
-        destination: `${process.env.NEXT_PUBLIC_WS_BASE ?? 'ws://localhost:8080'}/ws/:path*`,
-      },
+      // /ws/:path* rewrite 禁用 — Next.js 14.2.5 不接受 ws:// destination
+      // 前端直接走 NEXT_PUBLIC_WS_BASE 连后端 (绕过 Next.js, nginx 升级 Upgrade 头)
     ];
   },
   experimental: {

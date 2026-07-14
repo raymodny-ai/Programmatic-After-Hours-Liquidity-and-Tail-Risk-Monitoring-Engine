@@ -27,12 +27,12 @@ export default function ViewC() {
 
   const { data: listResp, mutate: reloadList } = useSWR<ConfigsResp>(
     '/api/v1/config',
-    (p) => fetchApi<ConfigsResp>(p),
+    (p: string) => fetchApi<ConfigsResp>(p),
   );
 
   const { data: detail } = useSWR<ConfigDetailResp>(
     `/api/v1/config/${selected}`,
-    (p) => fetchApi<ConfigDetailResp>(p),
+    (p: string) => fetchApi<ConfigDetailResp>(p),
     {
       onSuccess: (d) => {
         if (d?.data?.yaml) setEditedYaml(d.data.yaml);

@@ -25,6 +25,10 @@ class PolygonClient:
         get_option_contracts(ticker, expiration_date, limit) -> 期权合约分页数据
     """
 
+    # ── v1.2.2 (OpenClaw patch 2026-07-11): 免费层不含 snapshot 的短路开关 ──
+    # class-level 是为了多 ticker 共享:一次探测发现 403,后续 ticker 跳过重试风暴。
+    _snapshot_entitled: bool = True
+
     def __init__(self, api_key: Optional[str] = None) -> None:
         self.api_key = api_key or POLYGON_API_KEY
         if not self.api_key:
@@ -37,6 +41,58 @@ class PolygonClient:
             api_key=self.api_key,
             api_key_param="apiKey",
         )
+
+    @classmethod
+    def is_snapshot_entitled(cls) -> bool:
+        """是否启用 Polygon snapshot 端点。免费层为 False,会被 probe 被动 flip。"""
+        return cls._snapshot_entitled
+
+    @classmethod
+    def disable_snapshot(cls, reason: str = "") -> None:
+        """本次进程内关闭 Polygon snapshot。yfinance fallback 会接手。"""
+        if cls._snapshot_entitled:
+            cls._snapshot_entitled = False
+            logger.warning(
+                f"Polygon snapshot 端点已关闭（原因: {reason}）。"
+                f"后续 ticker 将跳过 Polygon,走 yfinance 备用源。"
+            )
+
+    async def probe_snapshot_entitlement(self) -> bool:
+        """快速探测 snapshot 端点是否可用。
+
+        返回 True = 有权限；返回 False = free tier 或 key 无权(已翻 flip _snapshot_entitled)。
+        选 O:SPY{近未来日}C00500000 这种高概率存在的合约,1 次调用快速判定。
+        """
+        if not self._snapshot_entitled:
+            return False
+        # 选 60 天后到期的 SPY call 500 (极大概率存在), 1 个合约
+        from datetime import timedelta
+        from src.data_ingestion.eod_fetcher import find_nearest_expiration  # 避免循环 import 问题
+        try:
+            exp = find_nearest_expiration()
+        except Exception:
+            exp = date.today() + timedelta(days=30)
+        exp_str = exp.isoformat().replace("-", "")
+        contract = f"O:SPY{exp_str}C00500000"
+        path = f"/v3/snapshot/options/{contract}"
+        try:
+            await self._client.get_json(path)
+            return True
+        except Exception as e:
+            # ── unwrap tenacity.RetryError → 最后一跳的 HTTPStatusError ──
+            inner: Exception = e
+            last_attempt = getattr(e, "last_attempt", None)
+            if last_attempt is not None and hasattr(last_attempt, "exception"):
+                inner_exc = last_attempt.exception()
+                if inner_exc is not None:
+                    inner = inner_exc
+            status = getattr(getattr(inner, "response", None), "status_code", None)
+            if status in (401, 403):
+                self.disable_snapshot(reason=f"probe 返 HTTP {status}")
+                return False
+            # 其他错误(网络/超时)不算无权,仍当有权限处理
+            logger.debug(f"snapshot 探活其他错误: {type(e).__name__}: {e}")
+            return True
 
     async def get_option_contracts(
         self,
@@ -134,6 +190,11 @@ class PolygonClient:
             - implied_volatility
             - day (open, high, low, close)
         """
+        # ── v1.2.2: snapshot 端点不可用 → 立即返回空,走 yfinance ──
+        if not self._snapshot_entitled:
+            logger.debug(f"[{ticker}] snapshot 已关闭,直接返回空,走 fallback")
+            return []
+
         # Step 1: 获取所有合约
         contracts = await self.get_all_option_contracts(ticker, expiration_date)
         if not contracts:
@@ -163,6 +224,17 @@ class PolygonClient:
                 all_snapshots.extend(snapshots)
             except Exception as e:
                 logger.error(f"获取快照失败: ticker={ticker}, error={e}")
+                # ── v1.2.2: unwrap tenacity.RetryError → 最后一跳的 HTTPStatusError ──
+                inner: Exception = e
+                last_attempt = getattr(e, "last_attempt", None)
+                if last_attempt is not None and hasattr(last_attempt, "exception"):
+                    inner_exc = last_attempt.exception()
+                    if inner_exc is not None:
+                        inner = inner_exc
+                status = getattr(getattr(inner, "response", None), "status_code", None)
+                if status in (401, 403):
+                    self.disable_snapshot(reason=f"HTTP {status} on {ticker} batch {i // batch_size + 1}")
+                    return []
                 continue
 
         logger.info(

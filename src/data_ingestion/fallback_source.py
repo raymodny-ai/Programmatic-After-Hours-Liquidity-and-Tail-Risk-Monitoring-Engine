@@ -35,6 +35,35 @@ DEFAULT_DIVIDEND_YIELD: dict[str, float] = {
 }
 
 
+def _safe_int(v: Any, default: int = 0) -> int:
+    """v1.2.2 (OpenClaw patch 2026-07-11): yfinance 返 NaN 时安全转 int。
+
+    yfinance 在 market open 之外常返 NaN, 直接 int() 会抛 ValueError。
+    """
+    try:
+        if v is None:
+            return default
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):  # NaN / Inf
+            return default
+        return int(f)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    """v1.2.2: yfinance 返 NaN 时安全转 float。"""
+    try:
+        if v is None:
+            return default
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):
+            return default
+        return f
+    except (TypeError, ValueError):
+        return default
+
+
 async def fetch_options_fallback(
     ticker: str,
     target_dte: int = 30,
@@ -220,23 +249,26 @@ def _row_to_snapshot(
 
     # 构造 OCC 格式的 ticker
     exp_clean = expiration_str.replace("-", "")
-    strike_str = f"{int(float(strike) * 1000):08d}"
+    strike_float = _safe_float(strike)
+    if strike_float <= 0:
+        return None
+    strike_str = f"{int(strike_float * 1000):08d}"
     occ = f"O:{ticker}{exp_clean}{'C' if contract_type == 'call' else 'P'}{strike_str}"
 
-    bid = row.get("bid", 0)
-    ask = row.get("ask", 0)
-    last_price = row.get("lastPrice", 0)
-    volume = row.get("volume", 0) or 0
-    open_interest = row.get("openInterest", 0) or 0
+    bid = _safe_float(row.get("bid"))
+    ask = _safe_float(row.get("ask"))
+    last_price = _safe_float(row.get("lastPrice"))
+    volume = _safe_int(row.get("volume"))
+    open_interest = _safe_int(row.get("openInterest"))
 
     return {
         "ticker": occ,
         "details": {
             "contract_type": contract_type,
-            "strike_price": float(strike),
+            "strike_price": strike_float,
             "expiration_date": expiration_str,
             "shares_per_contract": 100,
-            "open_interest": int(open_interest),
+            "open_interest": open_interest,
         },
         "greeks": {
             "delta": float(estimated_delta) if estimated_delta is not None else None,
@@ -244,17 +276,17 @@ def _row_to_snapshot(
             "theta": None,
             "vega": None,
         },
-        "implied_volatility": float(iv),
+        "implied_volatility": _safe_float(iv),
         "day": {
-            "open": float(bid),
-            "high": float(ask),
-            "low": float(bid),
-            "close": float(last_price),
-            "volume": int(volume),
+            "open": bid,
+            "high": ask,
+            "low": bid,
+            "close": last_price,
+            "volume": volume,
         },
         "last_quote": {
-            "bid": float(bid) if bid else None,
-            "ask": float(ask) if ask else None,
+            "bid": bid if bid else None,
+            "ask": ask if ask else None,
             "bid_size": 0,
             "ask_size": 0,
         },
