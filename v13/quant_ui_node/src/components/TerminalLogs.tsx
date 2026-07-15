@@ -5,7 +5,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import useSWR from 'swr';
 import '@xterm/xterm/css/xterm.css';
-import { fetchApi, WS_BASE } from '../lib/api';
+import { fetchApi, wsUrl } from '../lib/api';
 
 interface LogEntry {
   ts: string;
@@ -21,11 +21,11 @@ export default function TerminalLogs() {
   const [autoScroll, setAutoScroll] = useState(true);
   const [paused, setPaused] = useState(false);
 
-  // 初始历史日志
-  const { data: historyResp } = useSWR<{ ok: boolean; data?: LogEntry[] }>(
+  // 初始历史日志 (V1.3 后端未装 audit logger, 返 entries=[]; 走 WS 实时 streaming)
+  const { data: historyResp } = useSWR<{ count: number; entries: LogEntry[] }>(
     '/api/v1/audit?limit=200',
     (p: string) => fetchApi(p),
-    { refreshInterval: 0 },
+    { refreshInterval: 0, revalidateOnFocus: false },
   );
 
   useEffect(() => {
@@ -89,13 +89,13 @@ export default function TerminalLogs() {
     };
   }, []);
 
-  // 写入历史日志
+  // 写入历史日志 (空 entries 跳过,避免循环依赖)
   useEffect(() => {
     const term = termInstanceRef.current;
-    if (!term || !historyResp?.data) return;
+    if (!term || !historyResp?.entries?.length) return;
     if (paused) return;
 
-    for (const entry of historyResp.data.slice(-50)) {
+    for (const entry of historyResp.entries.slice(-50)) {
       writeLog(term, entry);
     }
   }, [historyResp, paused]);
@@ -109,7 +109,7 @@ export default function TerminalLogs() {
 
     const connect = () => {
       if (cancelled) return;
-      ws = new WebSocket(`${WS_BASE}/ws/alerts`);
+      ws = new WebSocket(wsUrl('/ws/alerts'));
 
       ws.onmessage = (ev) => {
         if (paused) return;

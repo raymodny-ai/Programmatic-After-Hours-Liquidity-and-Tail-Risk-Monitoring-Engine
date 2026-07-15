@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { AlertRecord, WS_BASE } from './api';
+import { AlertRecord, wsUrl } from './api';
 
 interface AlertsStreamState {
   alerts: AlertRecord[];
@@ -25,7 +25,7 @@ export function useAlertsStream(): AlertsStreamState {
     const connect = () => {
       if (cancelled) return;
       try {
-        const ws = new WebSocket(`${WS_BASE}/ws/alerts`);
+        const ws = new WebSocket(wsUrl('/ws/alerts'));
         wsRef.current = ws;
 
         ws.onopen = () => {

@@ -56,3 +56,7 @@ coverage.xml
 
 # ruff / pre-commit
 .ruff_cache/
+
+# Negation: allow next.js route folder named 'logs' under v13 UI
+!/v13/quant_ui_node/src/app/logs/
+!v13/quant_ui_node/src/app/logs/page.tsx

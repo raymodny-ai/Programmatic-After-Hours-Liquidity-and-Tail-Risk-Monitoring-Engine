@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import useSWR from 'swr';
 import clsx from 'clsx';
-import { fetchApi, HealthStatus, SkewSnapshot, VxnAlertSeverity } from '../lib/api';
+import { fetchApi, HealthStatus, SkewSnapshot, VxnAlertSeverity, adaptHealth, adaptLatest, HealthApiResp, LatestApiResp } from '../lib/api';
 import { useAlertsStream } from '../lib/useAlerts';
 
 const SEVERITY_COLORS: Record<VxnAlertSeverity, string> = {
@@ -120,25 +119,31 @@ function SkewCard({ snap }: SkewCardProps) {
 
 export default function HUD() {
   const [asOf, setAsOf] = useState<string>('');
+  const [health, setHealth] = useState<HealthStatus | undefined>(undefined);
+  const [skewData, setSkewData] = useState<{ data: { snapshots: Record<string, SkewSnapshot> } } | undefined>(undefined);
   const stream = useAlertsStream();
 
-  // 初始化默认日期为今天
+  // 初始化默认日期为今天 + 拉取数据 (手动 useEffect, 避免 SWR hydration 问题)
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
     setAsOf(today);
+
+    fetchApi<HealthApiResp>('/api/health')
+      .then(r => setHealth(adaptHealth(r)))
+      .catch(() => {/* failed; UI 给出灰色灯 */});
+
+    fetchApi<LatestApiResp>('/api/latest')
+      .then(r => setSkewData(adaptLatest(r)))
+      .catch(() => {/* failed; UI 给出 No data */});
   }, []);
 
-  const { data: health } = useSWR<HealthStatus>(
-    '/health',
-    (p: string) => fetchApi<HealthStatus>(p),
-    { refreshInterval: 10000 },
-  );
-
-  const { data: skewData } = useSWR<{ data?: { snapshots?: Record<string, SkewSnapshot> } }>(
-    asOf ? `/api/v1/options/skew?as_of=${asOf}` : null,
-    (p: string) => fetchApi(p),
-    { refreshInterval: 30000 },
-  );
+  // 日期变化时刷新 skew
+  useEffect(() => {
+    if (!asOf) return;
+    fetchApi<LatestApiResp>('/api/latest')
+      .then(r => setSkewData(adaptLatest(r)))
+      .catch(() => {/* keep prior skew on failure */});
+  }, [asOf]);
 
   const snapshots = skewData?.data?.snapshots
     ? Object.values(skewData.data.snapshots)

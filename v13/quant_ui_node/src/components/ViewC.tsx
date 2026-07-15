@@ -4,67 +4,75 @@ import { useState } from 'react';
 import useSWR from 'swr';
 import { fetchApi } from '../lib/api';
 
-interface ConfigItem {
-  name: string;
-  yaml: string;
+// V1.3 /api/v1/config → {configs:[{key, yaml, updated_at}]}
+// V1.3 /api/v1/config/{key} → {key, value: {…}, yaml: '...', updated_at}
+// V1.3 PUT  /api/v1/config/{key}  body: {yaml_text, value}
+interface ConfigListItem {
+  key: string;
+  yaml: string | null;
+  updated_at: string;
+}
+interface ConfigListResp {
+  configs: ConfigListItem[];
+}
+interface ConfigDetailResp {
+  key: string;
+  value: Record<string, unknown>;
+  yaml: string | null;
   updated_at: string;
 }
 
-interface ConfigsResp {
-  ok: boolean;
-  data?: ConfigItem[];
-}
-
-interface ConfigDetailResp {
-  ok: boolean;
-  data?: { yaml: string; value: Record<string, unknown> };
-}
-
 export default function ViewC() {
-  const [selected, setSelected] = useState<string>('vxn_thresholds');
+  const [selected, setSelected] = useState<string>('');  // 空串 = 还没选;打开后从列表里选第一个
   const [editedYaml, setEditedYaml] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<string>('');
 
-  const { data: listResp, mutate: reloadList } = useSWR<ConfigsResp>(
+  const { data: listResp, mutate: reloadList } = useSWR<ConfigListResp>(
     '/api/v1/config',
-    (p: string) => fetchApi<ConfigsResp>(p),
+    (p: string) => fetchApi<ConfigListResp>(p),
+    { revalidateOnFocus: false },
   );
 
-  const { data: detail } = useSWR<ConfigDetailResp>(
-    `/api/v1/config/${selected}`,
+  // 列表为空 → 选第一个有 yaml 的
+  const configs = listResp?.configs ?? [];
+  const effectiveKey = selected || configs[0]?.key || '';
+
+  const { data: detail } = useSWR<ConfigDetailResp | null>(
+    effectiveKey ? `/api/v1/config/${effectiveKey}` : null,
     (p: string) => fetchApi<ConfigDetailResp>(p),
     {
+      revalidateOnFocus: false,
       onSuccess: (d) => {
-        if (d?.data?.yaml) setEditedYaml(d.data.yaml);
+        if (d?.yaml != null) setEditedYaml(d.yaml);
       },
     },
   );
 
   const handleSave = async () => {
+    if (!effectiveKey) return;
     setSaveStatus('保存中…');
     try {
-      const res = await fetchApi<{ ok: boolean }>(`/api/v1/config/${selected}`, {
+      // V1.3 PUT body 走 {yaml_text, value}; value 用 detail.value 或 空 dict
+      await fetchApi<{ key: string; ok: boolean }>(`/api/v1/config/${effectiveKey}`, {
         method: 'PUT',
-        body: JSON.stringify({ yaml: editedYaml }),
+        body: JSON.stringify({
+          yaml_text: editedYaml,
+          value: detail?.value ?? {},
+        }),
       });
-      if (res.ok) {
-        setSaveStatus('✓ 已保存');
-        reloadList();
-        setTimeout(() => setSaveStatus(''), 2000);
-      } else {
-        setSaveStatus('✗ 失败');
-      }
+      setSaveStatus('✓ 已保存');
+      reloadList();
+      setTimeout(() => setSaveStatus(''), 2000);
     } catch (err) {
       setSaveStatus('✗ ' + (err instanceof Error ? err.message : 'error'));
     }
   };
 
   const handleReload = () => {
-    if (detail?.data?.yaml) setEditedYaml(detail.data.yaml);
+    if (detail?.yaml != null) setEditedYaml(detail.yaml);
   };
 
-  // 阈值滑块（演示）
-  const value = detail?.data?.value ?? {};
+  const value = detail?.value ?? {};
   const zAlert = typeof value.z_alert === 'number' ? value.z_alert : 1.5;
 
   return (
@@ -73,7 +81,7 @@ export default function ViewC() {
         <div>
           <h1 className="text-lg font-semibold">视图 C · 风控配置台</h1>
           <p className="text-xs text-slate-500 mt-1">
-            YAML 实时编辑 · 阈值滑块联动 · 保存后下次 21:00 任务生效
+            YAML 实时编辑 · 保存后下次 21:00 任务生效
           </p>
         </div>
         <div className="flex gap-2">
@@ -85,7 +93,7 @@ export default function ViewC() {
           </button>
           <button
             onClick={handleSave}
-            disabled={!editedYaml}
+            disabled={!editedYaml || !effectiveKey}
             className="text-xs px-3 py-1.5 bg-accent-cyan/20 border border-accent-cyan/40 hover:bg-accent-cyan/30 disabled:opacity-50 rounded text-accent-cyan"
           >
             保存
@@ -97,29 +105,29 @@ export default function ViewC() {
         {/* 左侧列表 */}
         <aside className="col-span-3 bg-bg-card border border-slate-800 rounded-md overflow-y-auto">
           <div className="p-3 border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500">
-            配置文件
+            配置文件 ({configs.length})
           </div>
           <ul>
-            {(listResp?.data ?? []).map((c) => (
-              <li key={c.name}>
+            {configs.map((c) => (
+              <li key={c.key}>
                 <button
-                  onClick={() => setSelected(c.name)}
+                  onClick={() => { setSelected(c.key); setEditedYaml(c.yaml ?? ''); }}
                   className={`w-full text-left px-3 py-2 text-xs font-mono ${
-                    selected === c.name
+                    effectiveKey === c.key
                       ? 'bg-accent-cyan/10 text-accent-cyan border-l-2 border-accent-cyan'
                       : 'text-slate-400 hover:bg-slate-800/50'
                   }`}
                 >
-                  <div>{c.name}</div>
+                  <div>{c.key}</div>
                   <div className="text-[10px] text-slate-600 mt-0.5">
-                    {c.updated_at}
+                    {c.updated_at ? new Date(c.updated_at).toLocaleString() : '—'}
                   </div>
                 </button>
               </li>
             ))}
-            {(!listResp?.data || listResp.data.length === 0) && (
+            {configs.length === 0 && (
               <li className="px-3 py-4 text-xs text-slate-600">
-                （无配置）
+                （无配置 — 数据库为空,等待 seed 或手动 PUT）
               </li>
             )}
           </ul>
@@ -128,7 +136,9 @@ export default function ViewC() {
         {/* 中间 YAML 编辑器 */}
         <main className="col-span-6 bg-bg-card border border-slate-800 rounded-md flex flex-col overflow-hidden">
           <div className="px-4 py-2 border-b border-slate-800 flex items-center justify-between text-xs">
-            <span className="text-slate-400 font-mono">{selected}.yaml</span>
+            <span className="text-slate-400 font-mono">
+              {effectiveKey ? `${effectiveKey}.yaml` : '(no config selected)'}
+            </span>
             <span
               className={`text-[10px] ${
                 saveStatus.startsWith('✓')
@@ -181,7 +191,7 @@ export default function ViewC() {
               <div className="flex justify-between text-xs mb-2">
                 <span className="text-slate-400">数据日期</span>
                 <span className="font-mono text-slate-300">
-                  {String(value.as_of ?? '—')}
+                  {String(value.as_of ?? detail?.updated_at ?? '—')}
                 </span>
               </div>
             </div>
